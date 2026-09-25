@@ -26,8 +26,23 @@ SKIP_TEXT = ["跳过", "跳过广告", "Skip", "SKIP", "关闭", "×", "X", "继
 LINE_TEXT = ["线路", "源", "HD", "高清", "线路1", "线路2", "源1", "源2",
              "Line", "Source"]
 STALL_TEXT = ["缓冲", "加载中", "loading", "buffer", "下载APP", "下载App",
-              "APP", "安装", "请安装"]
+              "安装", "请安装"]
 _STALL_NORM = [s.lower().replace(" ", "") for s in STALL_TEXT]
+
+
+def _is_stall_text(txt: str) -> bool:
+    """假缓冲判定(纯函数, 不碰网络/DOM): 全文小写去空格后含任一关键词.
+
+    注意裸 "app" 已剔除: 子串匹配会误杀 happy/apple/application 等正文
+    (player_text 取的是全页 body 文本). 引流意图由"下载app/安装/请安装"覆盖.
+    """
+    try:
+        t = (txt or "").lower().replace(" ", "")
+    except Exception:
+        return False
+    if not t:
+        return False
+    return any(k in t for k in _STALL_NORM)
 AD_HOSTS = ["doubleclick", "googlesyndication", "popads", "adserver",
             "advert", "preroll", "tracking", "analytics", "pushsdk",
             "hmtracker", "umeng", "51.la"]
@@ -200,7 +215,7 @@ def watch_one(site, page, idx: int, referer: str, budget: int = 50, sess=None):
         if media:
             return media[0], "direct"
         txt = _player_text(page).lower().replace(" ", "")
-        if any(k in txt for k in _STALL_NORM):
+        if _is_stall_text(txt):
             stall_rounds += 1
             if stall_rounds >= 3:
                 site.log("假缓冲(APP引流)止损: %s" % C.url_for_log(referer))

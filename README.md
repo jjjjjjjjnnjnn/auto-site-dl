@@ -76,7 +76,7 @@ auto-site-dl/
 ├── watchflow.py          视频深层流程（取流状态机 + 并行下载池）
 ├── tui.py                终端交互 UI（中英双语）
 ├── i18n.py               语言探测与译表（纯标准库）
-├── tests/test_security.py 安全回归（红队自审，424 项，纯本地零网络）
+├── tests/test_security.py 安全回归（红队自审，426 项，纯本地零网络）
 ├── requirements.txt
 ├── MANUAL.md             操作手册
 ├── LICENSE               Apache-2.0
@@ -121,11 +121,12 @@ auto-site-dl/
 - **布尔契约 v1.9.10**：`_goto`/`detect_verify` 只返布尔（旧版直接返回诊断文本/选择器串作流程控制）；诊断文本由 `diagnose_nav_error` 在展示点拼，导航 hint 落 `site._last_nav_hint`、验证选择器落 `site._last_verify_sel`，6 处调用方（含 watchflow）同步翻转
 - **会话备份 v1.9.11**：`wait` 成功即写 `cookies.txt.bak`（0600）；主文件被外部删除/清空时只读兜底（记 `session-bak-used` + WARNING 提示重跑 wait），双无则保持原样返回空
 - **深挖排空 v1.9.12**：详情页加沉降（滚触发懒挂载播放器，之前只 think 800ms）+ 即时排空网络捕获（`net_cap` 传进深挖消费即清，不等下个列表迭代，无下页不丢失）
+- **假缓冲收窄 v1.9.13**：`STALL_TEXT` 剔裸 `APP`（子串匹配误杀 happy/apple 等全页正文；引流意图由下载app/安装/请安装覆盖）+ 抽 `_is_stall_text` 纯函数
 
 ## 维护
 
 ```powershell
-python -u -X utf8 tests\test_security.py   # 回归闸门：424 项全过，exit 0
+python -u -X utf8 tests\test_security.py   # 回归闸门：426 项全过，exit 0
 python -X utf8 -m py_compile site_crawler.py watchflow.py tui.py i18n.py
 python -u -X utf8 site_crawler.py envcheck
 ```

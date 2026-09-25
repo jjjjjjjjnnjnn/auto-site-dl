@@ -1,6 +1,6 @@
 # 操作手册（MANUAL）
 
-对应版本：v1.9.12 ｜ 适用系统：Windows 10/11（PowerShell）｜ Python ≥ 3.9
+对应版本：v1.9.13 ｜ 适用系统：Windows 10/11（PowerShell）｜ Python ≥ 3.9
 
 ---
 
@@ -271,7 +271,7 @@ python -u -X utf8 site_crawler.py dl https://example.com/ 60 --allow-cdn --no-vi
 ## 7. 日常维护
 
 ```powershell
-python -u -X utf8 tests\test_security.py   # 回归：424 项全过 exit 0（改代码必跑）
+python -u -X utf8 tests\test_security.py   # 回归：426 项全过 exit 0（改代码必跑）
 python -X utf8 -m py_compile site_crawler.py watchflow.py tui.py i18n.py
 python -u -X utf8 site_crawler.py envcheck
 python -u -X utf8 site_crawler.py verify https://example.com/   # 离线自证下载物
@@ -478,7 +478,7 @@ python -u -X utf8 site_crawler.py updatecheck
 - 覆盖：TUI 全量双语（含危险区 YES 确认）；引擎日志暂中文（增量中）；`--lang` 已直通引擎，TUI 有"语言"开关（auto→zh→en 循环）
 - 用法：`python -u -X utf8 tui.py --lang en`；`site_crawler.py … --lang en`
 
-- 回归闸门：`tests/test_security.py` 424 项（[X]23 + [Y]19 + [Z]7 + [AA]3 + [AB]3 + [AC]5 + [AD]3 + [AE]3 + [AF]3 + [AG]2 + [AH]深挖排空 2）
+- 回归闸门：`tests/test_security.py` 426 项（[X]23 + [Y]19 + [Z]7 + [AA]3 + [AB]3 + [AC]5 + [AD]3 + [AE]3 + [AF]3 + [AG]2 + [AH]2 + [AI]假缓冲收窄 2）
 
 > v1.8.1 热修：`tui.py pick()` 的 `for i, (label, _)` 把 i18n 函数 `_` 遮蔽成字符串，TUI 启动即 `TypeError`。修为 `val`，教训——冒烟只验了键集合相等、没真调一次 `pick`；现回归用 mock input 喂 `1`/`q` 真调，`_` 再被遮蔽当场被抓。
 >
@@ -507,3 +507,5 @@ python -u -X utf8 site_crawler.py updatecheck
 > v1.9.11 会话备份（实战：某站 `sites/<host>/cookies.txt` 在两次运行之间凭空消失，非程序删除——引擎内除 purge 外无删除会话代码）：`wait` 存会话时同写 `cookies.txt.bak`（0600）；`_load_cookie_pairs` 主文件缺失/空时只读兜底备份（记 `session-bak-used` + WARNING 提示重跑 wait），主备双无保持返回空。`[AG]` 锁定兜底与主优先。注意：备份只防文件丢失，不防会话过期；盲测 harness（blindreap，repo 外个人 PPE）实测证实新鲜上下文即使注入 cookie 仍吃滑块壳（3.3KB），信任绑在暖机上下文——persistent profile 上下文复用列为下版候选，需拍板（稳定身份 vs 每轮换身份的取舍）。
 >
 > v1.9.12 深挖排空（修"详情页进了但流没出来"）：盲测 `dl` 显示关键词命中的详情页被跟进（无回退/无锚点行）却零产出——旧 `deep_dive` 只 think 800ms，且导航中网络捕获的流要等下个列表迭代才消费（无下页即 stranded）。现详情页加沉降（滚触发懒挂载播放器）+ `net_cap` 传进深挖即时消费即清。`[AH]` 锁定排空语义与沉降调用。
+>
+> v1.9.13 假缓冲收窄（`_player_text` 取的是全页 body 文本，裸 `APP` 子串匹配误杀 happy/apple/application 等正常正文）：`STALL_TEXT` 剔裸 `APP`，引流意图由"下载app/安装/请安装"覆盖（"缓冲/加载中/loading/buffer"保留）；判定抽为 `_is_stall_text` 纯函数。`[AI]` 锁定收窄后的真假分支与止损流程。注意：收窄不等于放行——APP 引流页仍 3 连止损；该站详情页经 DOM/视频态/网络层三路零产出，属纯引流壳，工具侧不再跟进（点穿引流 UI 有挂马风险，且调参需看内容，红线外）。剩余正路：用户暖机上下文复用（persistent profile，需拍板）。

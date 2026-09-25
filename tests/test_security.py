@@ -1669,6 +1669,42 @@ with _mock.patch.object(C, "_browser_guard", return_value=True), \
     atk("dive-no-anchors", _gotA == [] and _rvA is False and _pgA.visited == []
         and _budA == [20] and _dsA.counters.get("dive_no_anchors") == 1)
 
+print("[AI] 假缓冲判定收窄")
+atk("stall-narrow", W._is_stall_text("请下载APP观看高清") is True
+    and W._is_stall_text("缓冲中…") is True
+    and W._is_stall_text("happy day") is False
+    and W._is_stall_text("正在播放 正片") is False
+    and W._is_stall_text("") is False)
+
+
+class _FakeStallPage:
+    def evaluate(self, js):
+        if "innerText" in js:
+            return "下载APP继续观看"
+        if "currentTime" in js:
+            return {"has": False}
+        return {}
+
+    def content(self):
+        return ""
+
+    def query_selector(self, sel):
+        return None
+
+    def query_selector_all(self, sel):
+        return []
+
+    def wait_for_timeout(self, ms):
+        pass
+
+
+with _mock.patch.object(C, "think", lambda *a, **k: None):
+    _dsI = _FakeDiveSite()
+    atk("stall-break", W.watch_one(_dsI, _FakeStallPage(), 0, "https://h/d/1",
+                                  50, None) == ("", "")
+        and _dsI.counters.get("watch_stall") == 1
+        and _dsI.counters.get("watch_empty") == 1)
+
 print("[AF] 布尔契约")
 _afv = _FakeDiveSite()
 _pfv = _FakeDivePage(verify_sel=C.VERIFY_SELECTORS[0])
