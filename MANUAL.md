@@ -1,6 +1,6 @@
 # 操作手册（MANUAL）
 
-对应版本：v1.6.0 ｜ 适用系统：Windows 10/11（PowerShell）｜ Python ≥ 3.9
+对应版本：v1.7.0 ｜ 适用系统：Windows 10/11（PowerShell）｜ Python ≥ 3.9
 
 ---
 
@@ -238,7 +238,7 @@ python -u -X utf8 site_crawler.py dl https://example.com/ 60 --allow-cdn --no-vi
 ## 7. 日常维护
 
 ```powershell
-python -u -X utf8 tests\test_security.py   # 回归：339 项全过 exit 0（改代码必跑）
+python -u -X utf8 tests\test_security.py   # 回归：351 项全过 exit 0（改代码必跑）
 python -X utf8 -m py_compile site_crawler.py watchflow.py tui.py
 python -u -X utf8 site_crawler.py envcheck
 python -u -X utf8 site_crawler.py verify https://example.com/   # 离线自证下载物
@@ -364,6 +364,47 @@ python -u -X utf8 site_crawler.py check https://example.com/ `
 ### 12.4 会话劫持：Bearer 必被盗，只能缩窗口+绑环境
 
 - **OWASP Cookie Theft / Session Management 系列 + MITRE T1539**：session cookie 本质是 bearer token；Evilginx2 类 AiTM 专偷；缓解=短 TTL + Secure/HttpOnly/__Host- + 环境绑定 + 失窃后重认证。→ 对应 cookies.txt 0600 + 删前覆写 + 会话 TTL + 权限 WARNING + 独占锁（客户端能做的全做了）。
-- 对应红线：我们不碰服务端会话、不做 cookie 重放测试——`verify` 只验本地下载物，不验任何凭证有效性。
+- 对应红线：我们不碰服务端会话——`verify` 只验本地下载物，不验任何凭证有效性；`replay` 是 OWASP WSTG 会话劫持测试的只读 GET 最小实现（见 §13）
 
 - 回归闸门：`tests/test_security.py` 339 项（[S]纵深7 + [T]反劫持5 + [U]藏匿效率与规则17）
+
+---
+
+## 13. 攻击侧自测（v1.7.0，默认全关，仅自有/授权站）
+
+TUI 危险区统一范式：开关默认关；`replay`/`repin` 执行前必须输入 `YES`（"是否需要"式确认），输错即取消。
+
+### 13.1 `replay` cookie 重放自测（只读 GET）
+
+```powershell
+python -u -X utf8 site_crawler.py replay https://example.com/
+```
+
+- 三步：匿名 vs 带券（特权差异？）→ 带券换 UA/指纹重放（会话绑定？）；只比较状态码与正文长度，不下载媒体、不改任何状态
+- 结论：`REPLAY-SAME`（公开页/会话失效）/ `REPLAY-DIFF`（会话带特权）+ `REPLAY-UNBOUND`（换身份仍等效=未绑定，cookie 失窃即冒用）/ `REPLAY-BOUND`（疑似绑定，以人工复核为准）
+- Cookie 永不落日志（回归 `replay-noleak` 锁定）；无会话（未 `wait`）退出码 3
+- 对应 OWASP WSTG 会话劫持测试的合法子集：只测自有站、只读、不碰服务端状态
+
+### 13.2 `--hijack-check` TOFU 证书钉扎（劫持检测）
+
+```powershell
+python -u -X utf8 site_crawler.py check https://example.com/ --hijack-check
+# 站方换证确认合法后：
+python -u -X utf8 site_crawler.py check https://example.com/ --hijack-check --repin
+```
+
+- 标准库直连取对端证书 SHA256（只指纹不校验，不走代理，失败即跳过不拦）
+- 首见保存 `sites/<host>/certpin.txt`（0600）并 TOFU 信任；变更只 WARNING + `hijack-cert-changed`，**永不阻断**（CDN 轮换/换证误报率高，阻断即自残）
+- 钉扎文件是集合（容忍多证书轮换）；`--repin` 须人工确认合法后加钉
+- 局限（诚实）：只能发现"证书变了"，分不清 MITM/换证/轮换——最终靠人工确认；http 站自动跳过；代理环境直连失败即跳过
+
+### 13.3 做与不做
+
+| 需求 | 结论 |
+|---|---|
+| cookie 重放 | 做（本节，只读自测+YES 门） |
+| 劫持检测 | 做（本节，TOFU 钉扎只告警） |
+| 流量劫持（主动中间人） | 不做（攻击他人流量，无合法场景） |
+| AV 免杀 | 不做（纯 malware tradecraft；对应需求由完整性自检 + AV 信任区覆盖，见 README） |
+
+- 回归闸门：`tests/test_security.py` 351 项（[V]攻击侧自测12）

@@ -1151,6 +1151,53 @@ try:
 finally:
     C.norm_link_from = _orig_nlf
 
+print("[V] 攻击侧自测(replay/钉扎, 零网络)")
+atk("diff-same", C._diff_significant(200, 1000, 200, 1000) is False)
+atk("diff-status", C._diff_significant(200, 1000, 403, 1000) is True)
+atk("diff-len", C._diff_significant(200, 1000, 200, 500) is True)
+atk("diff-fail", C._diff_significant(200, -1, 200, 500) is False)
+atk("certfp-empty", C._cert_fp("", 443) == "")
+atk("certfp-invalid", C._cert_fp("example.invalid", 443) == "")
+sV2 = C.Site("https://example.invalid/", NS())
+atk("hijack-default-off", sV2.hijack_on() is False)
+atk("hijack-flag-on",
+    C.Site("https://example.invalid/", NS(hijack_check=True)).hijack_on() is True)
+C._save_pin(sV2, {"a" * 64, "xyz", "A" * 64})
+atk("pin-roundtrip", C._load_pin(sV2) == {"a" * 64})
+try:
+    os.remove(sV2._pinfile())
+except Exception:
+    pass
+sW = C.Site("https://example.invalid/", NS())
+with open(sW.ckf, "w", encoding="utf-8") as _f:
+    _f.write("sess=validtoken123")
+_callsW = [0]
+
+
+def _fake_probe(site, sess, url):
+    _callsW[0] += 1
+    if _callsW[0] == 2:
+        return 200, 500
+    return 200, 1000
+
+
+_orig_probe = C._probe_page
+C._probe_page = _fake_probe
+try:
+    _rcW = C.cmd_replay(sW)
+finally:
+    C._probe_page = _orig_probe
+atk("replay-diff-unbound", _rcW == 0 and _callsW[0] == 3
+    and sW.counters.get("replay-diff", 0) == 1
+    and sW.counters.get("replay-unbound", 0) == 1)
+atk("replay-noleak", "validtoken123" not in open(sW.logf, encoding="utf-8").read())
+sW3 = C.Site("https://example.invalid/", NS())
+try:
+    os.remove(sW3.ckf)
+except Exception:
+    pass
+atk("replay-no-session", C.cmd_replay(sW3) == 3)
+
 print("\nREDTEAM: %d 项全部守住" % N)
 for x in (s, s2, s2h, s2v, s2i, s6, s7, s7b, s8, s_col, s_ns, s9, _sg,
           sA, sB, sC, sD, sD2, sE, sF, sF2, sG, sH, sT, sT2,

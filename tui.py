@@ -123,6 +123,8 @@ def build_cmd(mode: str, url: str, opts: dict):
         cmd += ["--hls-key", opts["hls_key"]]
     if opts.get("lock"):
         cmd += ["--lock-session"]
+    if opts.get("hijack"):
+        cmd += ["--hijack-check"]
     if mode in ("watch", "dl"):
         cmd += ["--dl-jobs", str(int(opts.get("jobs", 3)))]
     return cmd
@@ -143,6 +145,7 @@ def action_page(url: str, opts: dict):
              (("🧭 栏目测绘 nav", "nav")),
               (("🧹 清扫 purge", "purge")),
               (("✅ 离线自证 verify", "verify")),
+              (("☠ 会话重放自测 replay(需YES确认)", "replay")),
              (("🩺 环境自检 envcheck", "envcheck")),
              (("⚙ CDN媒体: %s (切)" % ("开" if opts["cdn"] else "关"), "t_cdn")),
              (("⚙ 允许http: %s (切)" % ("开" if opts["http"] else "关"), "t_http")),
@@ -162,6 +165,8 @@ def action_page(url: str, opts: dict):
                 "t_hlskey")),
               (("⚙ 视频优先: %s (切)" % ("开" if opts["video"] else "关"), "t_video")),
               (("⚙ 会话独占锁: %s (切)" % ("开" if opts["lock"] else "关"), "t_lock")),
+              (("⚠ 劫持检测: %s (切)" % ("开" if opts["hijack"] else "关"), "t_hijack")),
+              (("⚠ 证书重钉 repin(跑check)", "t_repin")),
              (("⚙ 每轮页数: %d (设)" % opts["batch"], "t_batch")),
              (("⚙ 下载并发: %d (设)" % opts["jobs"], "t_jobs")),
              ])
@@ -235,6 +240,28 @@ def action_page(url: str, opts: dict):
         if r == "t_lock":
             opts["lock"] = not opts["lock"]
             continue
+        if r == "t_hijack":
+            opts["hijack"] = not opts["hijack"]
+            continue
+        if r == "t_repin":
+            try:
+                _yn = input("确认站方换证合法？输入 YES 重钉：").strip()
+            except (EOFError, KeyboardInterrupt):
+                continue
+            if _yn != "YES":
+                print("已取消")
+                continue
+            _cmd = build_cmd("check", url, opts) + ["--repin"]
+            run_cmd(_cmd)
+            continue
+        if r == "replay":
+            try:
+                _yn = input("☠ 确认目标为自有/已授权站？只发GET。输入 YES 继续：").strip()
+            except (EOFError, KeyboardInterrupt):
+                continue
+            if _yn != "YES":
+                print("已取消")
+                continue
         if r == "t_batch":
             try:
                 opts["batch"] = max(1, int(input("每轮页数: ").strip()))
@@ -284,8 +311,9 @@ def main() -> int:
     opts = {"cdn": True, "http": False, "batch": 60, "proxy": "", "column": "",
             "video": True, "jobs": 3, "insecure": False, "browser": "",
             "clone": False, "spoof": "", "spoof_referer": "", "snapshot": "",
-            "softwall": "", "text_proxy": "", "hls_key": "", "lock": False}
-    print("auto_site_dl TUI v1.6.0 (q 返回, Ctrl+C 停止任务)")
+            "softwall": "", "text_proxy": "", "hls_key": "", "lock": False,
+            "hijack": False}
+    print("auto_site_dl TUI v1.7.0 (q 返回, Ctrl+C 停止任务)")
     site_page(opts)
     return 0
 

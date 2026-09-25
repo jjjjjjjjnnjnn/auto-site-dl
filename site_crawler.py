@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 jjjjjjjjnnjnn
-"""通用站点媒体下载器 v1.6.0: 填网址 -> 检测人机验证 -> 需验证弹窗等人工 -> 自动全站下载.
+"""通用站点媒体下载器 v1.7.0: 填网址 -> 检测人机验证 -> 需验证弹窗等人工 -> 自动全站下载.
 
 用法 (python -u -X utf8 site_crawler.py ...):
   check <url>              只检测: 该站是否需要人机验证 (不下载, 不存页面内容)
@@ -13,6 +13,7 @@
   nav <url>                栏目测绘: 导航区清单 columns.txt + 分页器试探
   purge <url>              清扫: 补/纠正扩展名, 隔离非媒体到 rejected/(纯本地, 不联网)
   verify <url>             自证: 按 inventory.csv 重算 sha256(纯本地, 不联网)
+  replay <url>             重放自测: cookie 换身份只读重放(仅自有/授权站, 只 GET)
   envcheck [url]           环境自检: 依赖/浏览器/引擎 (纯本地, 不碰目标站)
 
 选项 (加在末尾):
@@ -25,6 +26,8 @@
   --clone-profile PATH     克隆真实浏览器profile(Torch思路, 只读源, 隔离副本)
   --column SUB             只爬URL含该子串的栏目
   --lock-session           会话独占锁(防他进程并发写cookies.txt)
+  --hijack-check           劫持检测: TOFU 证书钉扎(默认关, 变更只告警不阻断)
+  --repin                  证书重钉(人工确认换证合法后, 与 --hijack-check 同用)
   --spoof MODE             请求伪装: googlebot/bingbot/mobile(默认off);
                              bot类强制requests+告警, mobile同步移动视口与头
   --spoof-referer URL      伪装Referer(只收http(s), 非法值丢弃)
@@ -80,7 +83,7 @@ from urllib import robotparser
 
 import requests
 
-__version__ = "1.6.0"
+__version__ = "1.7.0"
 
 # ---------------------------------------------------------------- 身份池
 UA_POOL = [
@@ -764,6 +767,11 @@ def preflight(site) -> int:
                 return 2
     except Exception:
         pass
+    try:  # 攻击侧自测之劫持检测默认关, 开了才钉扎比对
+        if site.hijack_on():
+            _hijack_check(site)
+    except Exception:
+        pass
     p, origin = eff_proxy(site, "browser")
     if p and not proxy_alive(p):
         site.log("PROXY-DEAD 代理不可用(%s %s), 停止. 检查代理进程与端口."
@@ -1021,6 +1029,15 @@ class Site:
             return base + quote(url or "", safe="")
         except Exception:
             return ""
+
+    def hijack_on(self) -> bool:
+        """劫持检测开关: 默认关, --hijack-check 或 cfg 显式开."""
+        if getattr(self.args, "hijack_check", False):
+            return True
+        return bool(self.cfg.get("hijack_check", False))
+
+    def _pinfile(self) -> str:
+        return os.path.join(self.root, "certpin.txt")
 
     def tls_verify(self) -> bool:
         if getattr(self.args, "insecure", False):
@@ -2181,6 +2198,179 @@ def _note_mitm(site, reason: str, url: str) -> None:
             site.log("MITM-SIGNAL %s %s" % (reason, url_for_log(url)))
     except Exception:
         pass
+
+
+# ================================================================ 攻击侧自测(默认全关, 仅自有/授权站)
+def _cert_fp(host: str, port: int = 443, timeout: int = 10) -> str:
+    """取对端证书 SHA256(只指纹不校验, 标准库直连, 不走代理).
+
+    失败回 "". 纯探测, 不发送应用数据.
+    """
+    try:
+        import socket as _so
+        import ssl as _ssl
+        ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = _ssl.CERT_NONE
+        s = _so.create_connection((host, port), timeout=timeout)
+        try:
+            t = ctx.wrap_socket(s, server_hostname=host)
+            try:
+                der = t.getpeercert(binary_form=True)
+            finally:
+                try:
+                    t.close()
+                except Exception:
+                    pass
+        except Exception:
+            try:
+                s.close()
+            except Exception:
+                pass
+            return ""
+    except Exception:
+        return ""
+    try:
+        return hashlib.sha256(der).hexdigest() if der else ""
+    except Exception:
+        return ""
+
+
+def _load_pin(site) -> set:
+    try:
+        with open(site._pinfile(), encoding="utf-8") as f:
+            return {x.strip().lower() for x in f if len(x.strip()) == 64}
+    except Exception:
+        return set()
+
+
+def _save_pin(site, fps: set) -> None:
+    try:
+        with open(site._pinfile(), "w", encoding="utf-8") as f:
+            for x in sorted(fps):
+                f.write(x + "\n")
+        _chmod_0600(site._pinfile())
+    except Exception:
+        pass
+
+
+def _hijack_check(site) -> None:
+    """TOFU 证书钉扎: 首见保存并 TOFU 信任; 变更只 WARNING+记账, 不阻断.
+
+    CDN 轮换/站方换证会误报, 误报后人工确认用 --repin 加钉.
+    """
+    try:
+        p = urlsplit(site.url)
+    except Exception:
+        return
+    if (p.scheme or "").lower() != "https":
+        return
+    try:
+        port = p.port or 443
+    except Exception:
+        port = 443
+    fp = _cert_fp(site.host, port)
+    if not fp:
+        site.bump("hijack-skipped")
+        site.log("劫持检测跳过(证书直连失败, 可能需代理环境)")
+        return
+    pins = _load_pin(site)
+    if not pins:
+        _save_pin(site, {fp})
+        site.bump("hijack-pinned")
+        site.log("证书首钉(TOFU): %s… 已信任当前证书, 变更会告警" % fp[:16])
+        return
+    if getattr(getattr(site, "args", None), "repin", False):
+        pins.add(fp)
+        _save_pin(site, pins)
+        site.bump("hijack-repinned")
+        site.log("证书重钉: 已信任 %s…(共%d个, 你确认过站方换证)" % (fp[:16], len(pins)))
+        return
+    if fp not in pins:
+        site.bump("hijack-cert-changed")
+        site.log("WARNING 证书变更(可能被劫持/MITM/站方换证/CDN轮换): "
+                 "当前%s… 与钉扎不符, 请人工确认, 确认合法后用 --repin 加钉" % fp[:16])
+
+
+def _probe_page(site, sess, url: str):
+    """只读探测一页: 返回 (status, 正文长度). 正文只内存计数."""
+    try:
+        r, _, st = _fetch_guarded(sess, url, site.url, "text/html")
+        if r is None:
+            return st, -1
+        try:
+            n = len(_read_capped(r, 65536))
+        finally:
+            _snap_close(r)
+        return st, n
+    except Exception:
+        return 0, -1
+
+
+def _diff_significant(st1, ln1, st2, ln2) -> bool:
+    if st1 != st2:
+        return True
+    if ln1 < 0 or ln2 < 0:
+        return False
+    try:
+        base = max(ln1, ln2, 1)
+        return abs(ln1 - ln2) / float(base) > 0.05
+    except Exception:
+        return False
+
+
+def cmd_replay(site) -> int:
+    """cookie 重放自测(只读 GET, 仅自有/授权站).
+
+    三步: 匿名 vs 带 cookie(特权差异?) -> 带 cookie 换 UA 重放(会话绑定?).
+    Cookie 永不落日志, 只比较状态码与正文长度. 不下载媒体, 不改任何状态.
+    """
+    site.log("TARGET=%s MODE=replay(只读自测)" % site.url)
+    site.log("WARNING 重放自测仅限自有/已授权站点; 本次只发 GET, 不下载媒体, Cookie 不落日志")
+    try:
+        with open(site.ckf, encoding="utf-8") as f:
+            raw = f.read().strip()
+    except Exception:
+        raw = ""
+    if not raw or len(raw) < 8:
+        site.log("无会话(先跑 wait). 退出.")
+        return 3
+    if preflight(site) == 2:
+        return 2
+    sessA, _ = make_session(site)
+    try:
+        sessA.headers.update({"Cookie": raw})
+    except Exception:
+        pass
+    sessB, _ = make_session(site)
+    stA, lnA = _probe_page(site, sessA, site.url)
+    stB, lnB = _probe_page(site, sessB, site.url)
+    if lnA < 0 or lnB < 0:
+        site.log("REPLAY-INCONCLUSIVE 探测失败(匿名%d/带券%d), 查网络后重跑" % (stB, stA))
+        return 0
+    if not _diff_significant(stA, lnA, stB, lnB):
+        site.log("REPLAY-SAME 带券与匿名无差异(该页公开或会话已失效, 可换需登录页重测)")
+        return 0
+    site.log("REPLAY-DIFF 带券(%d,%dB) vs 匿名(%d,%dB): 会话携带特权" % (stA, lnA, stB, lnB))
+    site.bump("replay-diff")
+    try:
+        site.pick_identity()
+    except Exception:
+        pass
+    sessC, _ = make_session(site)
+    try:
+        sessC.headers.update({"Cookie": raw})
+    except Exception:
+        pass
+    stC, lnC = _probe_page(site, sessC, site.url)
+    if lnC >= 0 and not _diff_significant(stA, lnA, stC, lnC):
+        site.log("REPLAY-UNBOUND 换 UA/指纹重放仍等效: 该站会话未绑定客户端特征, "
+                 "cookie 失窃即被冒用(自有站请加绑定/短 TTL)")
+        site.bump("replay-unbound")
+    else:
+        site.log("REPLAY-BOUND 换身份后响应变化: 该站可能做了会话绑定(好事), 以人工复核为准")
+        site.bump("replay-bound")
+    return 0
 
 
 def _sec_fetch_for(url: str, referer: str, accept: str) -> dict:
@@ -3543,7 +3733,7 @@ def build_parser():
         description="通用站点媒体下载器 v%s: 填网址->检测验证->人工验证->自动下载" % __version__)
     ap.add_argument("mode", nargs="?", default="envcheck",
                     choices=["check", "wait", "dl", "auto", "diag", "watch",
-                             "nav", "purge", "verify", "envcheck"])
+                             "nav", "purge", "verify", "replay", "envcheck"])
     ap.add_argument("url", nargs="?", default="")
     ap.add_argument("batch", nargs="?", type=int, default=60)
     ap.add_argument("--allow-cdn", action="store_true")
@@ -3552,6 +3742,10 @@ def build_parser():
     ap.add_argument("--insecure", action="store_true")
     ap.add_argument("--lock-session", dest="lock_session", action="store_true",
                     help="会话独占锁(防他进程并发写cookies.txt, 抢锁失败退出码2)")
+    ap.add_argument("--hijack-check", dest="hijack_check", action="store_true",
+                    help="劫持检测: TOFU证书钉扎(默认关)")
+    ap.add_argument("--repin", dest="repin", action="store_true",
+                    help="证书重钉(人工确认合法后)")
     ap.add_argument("--browser", default="",
                     choices=["", "chromium", "chrome", "edge", "camoufox"],
                     help="浏览器通道: camoufox=C++层指纹(最强); chrome/edge=本机真实浏览器")
@@ -3621,6 +3815,8 @@ def main(argv=None) -> int:
         return cmd_purge(site)
     if a.mode == "verify":
         return cmd_verify(site)
+    if a.mode == "replay":
+        return cmd_replay(site)
     if a.mode == "watch":
         from watchflow import cmd_watch
         return cmd_watch(site, a.batch, _auto_jobs(a.dl_jobs))
