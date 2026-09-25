@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 jjjjjjjjnnjnn
-"""通用站点媒体下载器 v1.9.9: 填网址 -> 检测人机验证 -> 需验证弹窗等人工 -> 自动全站下载.
+"""通用站点媒体下载器 v1.9.10: 填网址 -> 检测人机验证 -> 需验证弹窗等人工 -> 自动全站下载.
 
 用法 (python -u -X utf8 site_crawler.py ...):
   check <url>              只检测: 该站是否需要人机验证 (不下载, 不存页面内容)
@@ -87,7 +87,7 @@ from urllib import robotparser
 
 import requests
 
-__version__ = "1.9.9"
+__version__ = "1.9.10"
 
 # ---------------------------------------------------------------- 身份池
 UA_POOL = [
@@ -1948,8 +1948,8 @@ def settle_lazy_load(page, site, max_rounds: int = 3) -> int:
 
 
 # ================================================================ 页面分析
-def detect_verify(page, site=None):
-    """验证检测: 命中选择器即需人工. 返回 (needed, selector)."""
+def detect_verify(page, site=None) -> bool:
+    """验证检测: 命中选择器即需人工. 只返布尔; 命中的选择器记 site._last_verify_sel."""
     sels = list(VERIFY_SELECTORS)
     try:
         if site is not None:
@@ -1959,10 +1959,20 @@ def detect_verify(page, site=None):
     for sel in sels:
         try:
             if page.query_selector(sel):
-                return True, sel
+                try:
+                    if site is not None:
+                        site._last_verify_sel = sel
+                except Exception:
+                    pass
+                return True
         except Exception:
             pass
-    return False, ""
+    try:
+        if site is not None:
+            site._last_verify_sel = ""
+    except Exception:
+        pass
+    return False
 
 
 # ================================================================ 路径三: 客户端干预
@@ -3626,8 +3636,8 @@ def _diag_snapshot(page, site):
     except Exception:
         snap["raw"] = {}
     try:
-        _nv, _why = detect_verify(page, site)
-        snap["verify"] = _why if _nv else ""
+        _nv = detect_verify(page, site)
+        snap["verify"] = getattr(site, "_last_verify_sel", "") if _nv else ""
     except Exception:
         pass
     try:
@@ -3705,7 +3715,7 @@ def deep_dive(page, site, sess, anchors, idx: int, budget: int):
             think(page, 800)
         except Exception:
             return False, False
-        nv, _ = detect_verify(page, site)
+        nv = detect_verify(page, site)
         if nv:
             return True, False
         try:
@@ -3782,16 +3792,17 @@ def deep_dive(page, site, sess, anchors, idx: int, budget: int):
 
 
 # ================================================================ 模式
-def _goto(page, site, url: str):
+def _goto(page, site, url: str) -> bool:
+    """导航: 成功 True; 失败 False(已打 NAV-FAIL 日志, hint 落 site._last_nav_hint)."""
     if not _browser_guard(site, url):
         try:
             site._last_nav_hint = "内网目标已拦截"
         except Exception:
             pass
-        return "内网目标已拦截"
+        return False
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        return ""
+        return True
     except Exception as e:
         hint = diagnose_nav_error(str(e))
         try:
@@ -3799,7 +3810,7 @@ def _goto(page, site, url: str):
         except Exception:
             pass
         site.log("NAV-FAIL %s 诊断: %s" % (url_for_log(url), hint))
-        return hint
+        return False
 
 
 def _snapshot_intel(site, tail: str = "原站仍走 wait 验证") -> None:
@@ -3833,10 +3844,11 @@ def cmd_check(site) -> int:
     pw, browser, ctx, page = None, None, None, None
     try:
         pw, browser, ctx, page = open_ctx(site, True, p)
-        if _goto(page, site, site.url):
+        if not _goto(page, site, site.url):
             return 2
-        nv, why = detect_verify(page, site)
+        nv = detect_verify(page, site)
         if nv:
+            why = getattr(site, "_last_verify_sel", "") or "?"
             site.log("CHECK %s -> VERIFY-NEEDED 需人工验证 (selector:%s)"
                      % (site.url, why))
             _snapshot_intel(site)  # 路径二/四: 快照+文本代理情报(只读探测, 不改变"需验证"结论)
@@ -3861,15 +3873,15 @@ def cmd_wait(site, timeout: int = 300) -> int:
     p, _ = eff_proxy(site, "browser")
     pw, browser, ctx, page = open_ctx(site, False, p)
     try:
-        if _goto(page, site, site.url):
+        if not _goto(page, site, site.url):
             try:
                 input("页面未加载, 人工处理后回车继续(直接回车退出): ")
             except EOFError:
                 return 2
         t0 = time.time()
-        ok, why = False, ""
+        ok = False
         while time.time() - t0 < timeout:
-            nv, why = detect_verify(page, site)
+            nv = detect_verify(page, site)
             if not nv:
                 ok = True
                 break
@@ -3891,7 +3903,8 @@ def cmd_wait(site, timeout: int = 300) -> int:
             except Exception as e:
                 site.log("会话保存失败: %s" % str(e)[:100])
                 return 1
-            site.log("VERIFIED (%s) 会话已保存. 可运行 dl." % (why or "人工确认"))
+            site.log("VERIFIED (%s) 会话已保存. 可运行 dl."
+                     % (getattr(site, "_last_verify_sel", "") or "人工确认"))
             return 0
         site.log("TIMEOUT 未检测到验证.")
         return 1
@@ -3956,11 +3969,11 @@ def cmd_dl(site, batch: int = 60, dl_jobs: int = 1) -> int:
                 site.bump("skip_robots")
                 break
             seen_page.add(url)
-            if _goto(page, site, url):
+            if not _goto(page, site, url):
                 break
             visited += 1
             settle_lazy_load(page, site)
-            nv, _ = detect_verify(page, site)
+            nv = detect_verify(page, site)
             if nv:
                 site.log("REVERIFY 又出现验证, 停止. 请重跑 wait.")
                 stop_verify = True
@@ -4158,7 +4171,7 @@ def cmd_diag(site) -> int:
     pw, browser, ctx, page = None, None, None, None
     try:
         pw, browser, ctx, page = open_ctx(site, True, p)
-        if _goto(page, site, site.url):
+        if not _goto(page, site, site.url):
             return 2
         _snap = _diag_snapshot(page, site)
         _raw = _snap.get("raw") or {}
@@ -4198,7 +4211,7 @@ def cmd_nav(site) -> int:
     pw, browser, ctx, page = None, None, None, None
     try:
         pw, browser, ctx, page = open_ctx(site, True, p)
-        if _goto(page, site, site.url):
+        if not _goto(page, site, site.url):
             return 2
         try:
             page._site_ref = site

@@ -76,7 +76,7 @@ auto-site-dl/
 ├── watchflow.py          视频深层流程（取流状态机 + 并行下载池）
 ├── tui.py                终端交互 UI（中英双语）
 ├── i18n.py               语言探测与译表（纯标准库）
-├── tests/test_security.py 安全回归（红队自审，417 项，纯本地零网络）
+├── tests/test_security.py 安全回归（红队自审，420 项，纯本地零网络）
 ├── requirements.txt
 ├── MANUAL.md             操作手册
 ├── LICENSE               Apache-2.0
@@ -118,11 +118,12 @@ auto-site-dl/
 - **auto 自动驾驶 v1.9.7**：`auto` 不再首败即退——check 梯子至多 3 次（1 照常；2 换身份束+退避；3 换浏览器通道，真 Chrome 可能自带代理配置），锁被活进程占则不重试；三振后配了快照/文本代理则只读情报兜底，再打处置 verdict；`_snapshot_intel` 抽取复用，`_eff_channel` 通道顺序可测
 - **诚实梯子 v1.9.8**：重试真换 `run_id`（旧版只换 UA 不换号，日志身份束不变）；`anon_report` 显示有效通道（含 auto 覆盖）；`_goto` 落 `_last_nav_hint`，verdict 按末次错误分类（证书→ `--insecure` 须知+中间人风险、代理→查链路、其他→配代理/查 URL，未配快照则提示 `--snapshot wayback`）
 - **通道保持 v1.9.9**：梯子切到的通道保留给 wait/dl 全程（旧版 check 用完即清，dl 掉回默认通道重撞墙）；`dl` 首跳即断记 `dl_no_entry`（旧版 visited=0 无声）；深挖无锚点记 `dive_no_anchors`（区分"有链不跟"与"无链可跟"）
+- **布尔契约 v1.9.10**：`_goto`/`detect_verify` 只返布尔（旧版直接返回诊断文本/选择器串作流程控制）；诊断文本由 `diagnose_nav_error` 在展示点拼，导航 hint 落 `site._last_nav_hint`、验证选择器落 `site._last_verify_sel`，6 处调用方（含 watchflow）同步翻转
 
 ## 维护
 
 ```powershell
-python -u -X utf8 tests\test_security.py   # 回归闸门：417 项全过，exit 0
+python -u -X utf8 tests\test_security.py   # 回归闸门：420 项全过，exit 0
 python -X utf8 -m py_compile site_crawler.py watchflow.py tui.py i18n.py
 python -u -X utf8 site_crawler.py envcheck
 ```

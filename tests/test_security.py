@@ -397,7 +397,7 @@ class _FakePage:
 
 
 _fp = _FakePage()
-atk("goto-guard-block", C._goto(_fp, sD, "http://127.0.0.1/x") != ""
+atk("goto-guard-block", C._goto(_fp, sD, "http://127.0.0.1/x") is False
     and _fp.gotos == [])
 
 
@@ -1628,8 +1628,8 @@ class _BoomNavPage:
 
 with _mock.patch.object(C, "_browser_guard", return_value=True):
     _ns = _FakeNavSite()
-    _hint = C._goto(_BoomNavPage(), _ns, "https://h/p")
-    atk("goto-hint", "证书" in _hint and _ns._last_nav_hint == _hint
+    atk("goto-hint", C._goto(_BoomNavPage(), _ns, "https://h/p") is False
+        and "证书" in _ns._last_nav_hint
         and any("NAV-FAIL https://h/p" in _l for _l in _ns.lines))
 with _mock.patch.object(C, "cmd_check", side_effect=[2, 0]), \
         _mock.patch.object(C, "cmd_dl", return_value=0), \
@@ -1668,6 +1668,17 @@ with _mock.patch.object(C, "_browser_guard", return_value=True), \
     _gotA, _rvA = C.deep_dive(_pgA, _dsA, None, [], [0], _budA)
     atk("dive-no-anchors", _gotA == [] and _rvA is False and _pgA.visited == []
         and _budA == [20] and _dsA.counters.get("dive_no_anchors") == 1)
+
+print("[AF] 布尔契约")
+_afv = _FakeDiveSite()
+_pfv = _FakeDivePage(verify_sel=C.VERIFY_SELECTORS[0])
+atk("verify-bool-true", C.detect_verify(_pfv, _afv) is True
+    and _afv._last_verify_sel == C.VERIFY_SELECTORS[0])
+_afn = _FakeDiveSite()
+_pfn = _FakeDivePage()
+atk("verify-bool-false", C.detect_verify(_pfn, _afn) is False
+    and _afn._last_verify_sel == "")
+atk("verify-bool-nosite", C.detect_verify(_FakeDivePage(), None) is False)
 
 print("\nREDTEAM: %d 项全部守住" % N)
 for x in (s, s2, s2h, s2v, s2i, s6, s7, s7b, s8, s_col, s_ns, s9, _sg,

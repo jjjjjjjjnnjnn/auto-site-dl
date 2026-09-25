@@ -297,10 +297,10 @@ def cmd_watch(site, batch: int = 10, dl_jobs: int = 3) -> int:
             if not url or url in seen:
                 break
             seen.add(url)
-            if C._goto(page, site, url):
+            if not C._goto(page, site, url):
                 break
             C.settle_lazy_load(page, site)
-            nv, _ = C.detect_verify(page, site)
+            nv = C.detect_verify(page, site)
             if nv:
                 site.log("REVERIFY 又出现验证, 停止. 请重跑 wait.")
                 site.summary()
@@ -329,7 +329,7 @@ def cmd_watch(site, batch: int = 10, dl_jobs: int = 3) -> int:
                 C.think(page, 1000)
             except Exception:
                 continue
-            nv, _ = C.detect_verify(page, site)
+            nv = C.detect_verify(page, site)
             if nv:
                 site.log("REVERIFY 又出现验证, 停止. 请重跑 wait.")
                 break
