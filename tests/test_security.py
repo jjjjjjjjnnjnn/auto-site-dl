@@ -604,9 +604,188 @@ atk("guard-userhost", C._browser_guard(sH, "http://evil@127.0.0.1/") is False)
 atk("guard-trail", C._browser_guard(sH, "http://127.0.0.1./x") is False)
 atk("guard-upper", C._browser_guard(sH, "HTTP://127.0.0.1/X") is False)
 
+print("[K] 路径一: 请求伪装")
+sK0 = C.Site("https://example.invalid/", NS())
+atk("spoof-off", sK0.spoof_mode() == "" and sK0.UA in C.UA_POOL)
+atk("spoof-unknown",
+    C.Site("https://example.invalid/", NS(spoof="evil")).spoof_mode() == "")
+sK1 = C.Site("https://example.invalid/", NS(spoof="googlebot"))
+atk("spoof-bot-ua", "Googlebot" in sK1.UA)
+atk("spoof-bot-tls", C._tls_kind_for(sK1) == "requests")
+atk("spoof-bot-tls-off", C._tls_kind_for(sK0) == "curl_cffi")
+sK2 = C.Site("https://example.invalid/", NS(spoof="mobile"))
+atk("spoof-mobile-vp", sK2.viewport["width"] <= 412 and "Mobile" in sK2.UA)
+sK3 = C.Site("https://example.invalid/",
+             NS(spoof_referer="https://www.google.com/"))
+atk("spoof-ref-ok",
+    sK3.ref_for("https://example.invalid/") == "https://www.google.com/")
+atk("spoof-ref-evil",
+    C.Site("https://example.invalid/",
+           NS(spoof_referer="javascript:alert(1)")).spoof_referer() == "")
+atk("spoof-ref-inject",
+    C.Site("https://example.invalid/",
+           NS(spoof_referer="https://h/x\nX: 1")).spoof_referer() == "")
+atk("spoof-ref-userinfo",
+    C.Site("https://example.invalid/",
+           NS(spoof_referer="https://u@h/")).spoof_referer() == "")
+_sessK, _kindK = C.make_session(sK1)
+atk("spoof-bot-sess", _kindK == "requests"
+    and "Googlebot" in _sessK.headers.get("User-Agent", ""))
+_sessM, _kindM = C.make_session(sK2)
+atk("spoof-mobile-hdr",
+    _sessM.headers.get("Sec-CH-UA-Mobile") == "?1"
+    and _sessM.headers.get("Sec-CH-UA-Platform") == '"Android"')
+
+print("[L] 路径二: 缓存快照")
+sL0 = C.Site("https://example.invalid/", NS())
+atk("snap-off", C.fetch_snapshot(sL0, _FakeSess([]),
+                                 "https://example.invalid/a") == (False, "", 0))
+atk("snap-unknown",
+    C.Site("https://example.invalid/",
+           NS(snapshot="evil")).snapshot_mode() == "")
+atk("snap-cap", len(C._read_capped(
+    _FakeResp(200, {}, "u", text="x" * 100), 10)) <= 10)
+_orig_pub = C.is_public_host
+C.is_public_host = lambda h: True if h in (
+    "archive.org", "web.archive.org", "archive.ph",
+    "archive.md") else _orig_pub(h)
+try:
+    _good_html = "<html><body>" + "正文内容填充 " * 120 + "</body></html>"
+    _api = ('{"archived_snapshots": {"closest": {"url": '
+            '"https://web.archive.org/web/2024/https://example.invalid/a", '
+            '"status": "200"}}}')
+    sL1 = C.Site("https://example.invalid/", NS(snapshot="wayback"))
+    _fsL1 = _FakeSess([
+        _FakeResp(200, {}, "https://archive.org/wayback/available?url=x",
+                  text=_api),
+        _FakeResp(200, {},
+                  "https://web.archive.org/web/2024/https://example.invalid/a",
+                  text=_good_html)])
+    _ok1, _src1, _len1 = C.fetch_snapshot(sL1, _fsL1,
+                                          "https://example.invalid/a")
+    atk("snap-wayback-hit",
+        _ok1 is True and _src1 == "wayback" and _len1 > 0)
+    sL2 = C.Site("https://example.invalid/", NS(snapshot="wayback"))
+    _fsL2 = _FakeSess([_FakeResp(
+        200, {}, "https://archive.org/wayback/available?url=x",
+        text='{"archived_snapshots": {}}')])
+    atk("snap-wayback-miss",
+        C.fetch_snapshot(sL2, _fsL2,
+                         "https://example.invalid/a") == (False, "", 0))
+    sL3 = C.Site("https://example.invalid/", NS(snapshot="archive"))
+    _fsL3 = _FakeSess([_FakeResp(200, {}, "https://archive.ph/newest/x",
+                                 text=_good_html)])
+    _ok3, _src3, _len3 = C.fetch_snapshot(sL3, _fsL3,
+                                          "https://example.invalid/a")
+    atk("snap-archive-hit",
+        _ok3 is True and _src3 == "archive.ph" and _len3 > 0)
+    sL4 = C.Site("https://example.invalid/", NS(snapshot="archive"))
+    _blocked = "Just a moment, please wait. " + "填充 " * 300
+    _fsL4 = _FakeSess([_FakeResp(200, {}, "https://archive.ph/newest/x",
+                                 text=_blocked)])
+    atk("snap-blocked",
+        C.fetch_snapshot(sL4, _fsL4,
+                         "https://example.invalid/a") == (False, "", 0))
+    sL5 = C.Site("https://example.invalid/", NS(snapshot="auto"))
+    _fsL5 = _FakeSess([_FakeResp(200, {}, "https://archive.ph/newest/x",
+                                 text="<html><body>hi</body></html>")])
+    atk("snap-short",
+        C.fetch_snapshot(sL5, _fsL5,
+                         "https://example.invalid/a")[0] is False)
+    sL6 = C.Site("https://example.invalid/", NS(snapshot="archive"))
+    _fsL6 = _FakeSess([_FakeResp(403, {}, "https://archive.ph/newest/x")])
+    atk("snap-archive-err",
+        C.fetch_snapshot(sL6, _fsL6,
+                         "https://example.invalid/a") == (False, "", 0))
+    sL7 = C.Site("https://example.invalid/", NS(snapshot="wayback"))
+    _api_evil = ('{"archived_snapshots": {"closest": {"url": '
+                 '"http://127.0.0.1/evil", "status": "200"}}}')
+    _fsL7 = _FakeSess([_FakeResp(
+        200, {}, "https://archive.org/wayback/available?url=x",
+        text=_api_evil)])
+    atk("snap-evil-surl",
+        C.fetch_snapshot(sL7, _fsL7,
+                         "https://example.invalid/a") == (False, "", 0))
+finally:
+    C.is_public_host = _orig_pub
+atk("snap-unpatched", C.is_public_host == _orig_pub)
+
+
+class _FakePage:
+    def __init__(self, script):
+        self._script = list(script)
+
+    def evaluate(self, js):
+        if not self._script:
+            raise RuntimeError("no more scripted values")
+        v = self._script.pop(0)
+        if isinstance(v, Exception):
+            raise v
+        return v
+
+
+print("[M] 路径三: 客户端干预")
+sM0 = C.Site("https://example.invalid/", NS())
+_pg0 = _FakePage([{"removed": 99}])
+_rM0 = C.apply_softwall(_pg0, sM0)
+atk("sw-off", _rM0["mode"] == "" and _rM0["removed"] == 0
+    and len(_pg0._script) == 1)
+atk("sw-unknown",
+    C.Site("https://example.invalid/",
+           NS(softwall="evil")).softwall_mode() == "")
+sM1 = C.Site("https://example.invalid/", NS(softwall="strip"))
+_rM1 = C.apply_softwall(_FakePage([{"removed": 2, "unlocked": True}]), sM1)
+atk("sw-strip", _rM1["removed"] == 2 and _rM1["unlocked"] is True
+    and sM1.counters.get("softwall_stripped", 0) >= 1)
+sM2 = C.Site("https://example.invalid/", NS(softwall="reader"))
+_rM2 = C.apply_softwall(
+    _FakePage([{"paras": 10, "chars": 5000, "title": "秘密标题内容"}]), sM2)
+atk("sw-reader", _rM2["paras"] == 10 and _rM2["chars"] == 5000
+    and "秘密" not in str(_rM2))
+C.log_softwall(sM2, _rM2)
+atk("sw-noleak", "秘密" not in open(sM2.logf, encoding="utf-8").read())
+sM3 = C.Site("https://example.invalid/", NS(softwall="strip"))
+_rM3 = C.apply_softwall(_FakePage([RuntimeError("boom")]), sM3)
+atk("sw-boom", _rM3["removed"] == 0 and _rM3["unlocked"] is False)
+
+print("[N] 路径四: 一站式文本代理")
+sN0 = C.Site("https://example.invalid/", NS())
+atk("tp-off", sN0.text_proxy_base() == "" and sN0.text_proxy_url(
+    "https://example.invalid/a") == "")
+atk("tp-evil-scheme",
+    C.Site("https://example.invalid/",
+           NS(text_proxy="ftp://h:21/x")).text_proxy_base() == "")
+atk("tp-inject",
+    C.Site("https://example.invalid/",
+           NS(text_proxy="https://h/x\nX: 1")).text_proxy_base() == "")
+atk("tp-userinfo",
+    C.Site("https://example.invalid/",
+           NS(text_proxy="https://u@h/x")).text_proxy_base() == "")
+_orig_pub2 = C.is_public_host
+C.is_public_host = lambda h: True if h in (
+    "proxy.example.invalid",) else _orig_pub2(h)
+try:
+    sN1 = C.Site("https://example.invalid/",
+                 NS(text_proxy="https://proxy.example.invalid/a?u="))
+    atk("tp-join", sN1.text_proxy_url("https://example.invalid/x?k=v") ==
+        "https://proxy.example.invalid/a?u=https%3A%2F%2Fexample.invalid%2Fx%3Fk%3Dv")
+    _goodN = "<html><body>" + "代理正文填充 " * 120 + "</body></html>"
+    _fsN = _FakeSess([_FakeResp(
+        200, {}, "https://proxy.example.invalid/a?u=...", text=_goodN)])
+    _okN, _lenN = C.fetch_text_proxy(
+        sN1, _fsN, "https://example.invalid/x?token=SECRET123")
+    atk("tp-hit", _okN is True and _lenN > 0)
+    atk("tp-noleak", "SECRET123" not in open(
+        sN1.logf, encoding="utf-8").read())
+finally:
+    C.is_public_host = _orig_pub2
+atk("tp-unpatched", C.is_public_host == _orig_pub2)
+
 print("\nREDTEAM: %d 项全部守住" % N)
 for x in (s, s2, s2h, s2v, s2i, s6, s7, s7b, s8, s_col, s_ns, s9, _sg,
-          sA, sB, sC, sD, sD2, sE, sF, sF2, sG, sH, sT, sT2):
+          sA, sB, sC, sD, sD2, sE, sF, sF2, sG, sH, sT, sT2,
+          sK0, sK1, sK2, sK3, sL0, sL1, sL2, sL3, sL4, sL5, sL6, sL7,
+          sM0, sM1, sM2, sM3, sN0, sN1):
     try:
         shutil.rmtree(x.root, ignore_errors=True)
     except Exception:

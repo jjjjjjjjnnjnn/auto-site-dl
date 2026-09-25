@@ -7,7 +7,7 @@
 
 针对视频站做了深层交互（点封面 → 点观看 → 等加载 → 拿真流），并内置反追踪伪装与网络安全防护（SSRF、跳转复检、日志脱敏、TLS 强制校验、robots 遵守）。
 
-> **使用声明**：本工具仅用于下载你有权访问的公开媒体内容。请遵守目标网站服务条款与 robots 规则，尊重版权；因滥用产生的一切后果由使用者承担。
+> **使用声明**：本工具仅用于下载你有权访问的公开媒体内容。付费墙四路径扩展（`--spoof/--snapshot/--softwall/--text-proxy`，默认全关）仅供你在自有站点或已获授权的内容上测试与研究使用；请遵守目标网站服务条款与 robots 规则，尊重版权；因滥用产生的一切后果由使用者承担。
 
 ## 快速开始
 
@@ -57,6 +57,11 @@ python -u -X utf8 site_crawler.py purge https://example.com/
 | `--video-first` / `--no-video-first` | 视频优先（默认开） |
 | `--column SUB` | 只爬 URL 含该子串的栏目 |
 | `--dl-jobs N` | watch 下载并发 1–8（默认 3） |
+| `--spoof googlebot\|bingbot\|mobile` | 请求伪装（默认 off；bot 类强制 requests+告警） |
+| `--spoof-referer URL` | 伪装 Referer（只收 http(s)） |
+| `--snapshot wayback\|archive\|auto` | 缓存快照探测（默认 off，check 报情报） |
+| `--softwall strip\|reader` | 客户端干预：删遮罩/只计数（默认 off） |
+| `--text-proxy PREFIX` | 一站式文本代理前缀（通用，不内置第三方） |
 
 ## 目录结构
 
@@ -65,7 +70,7 @@ auto-site-dl/
 ├── site_crawler.py       主程序（模式入口 + 安全基座 + 下载引擎链）
 ├── watchflow.py          视频深层流程（取流状态机 + 并行下载池）
 ├── tui.py                终端交互 UI
-├── tests/test_security.py 安全回归（红队自审，229 项，纯本地零网络）
+├── tests/test_security.py 安全回归（红队自审，266 项，纯本地零网络）
 ├── requirements.txt
 ├── MANUAL.md             操作手册
 ├── LICENSE               Apache-2.0
@@ -82,12 +87,13 @@ auto-site-dl/
 - **SSRF**：下载目标必须解析为公网单播 IP；跳转终点复检 scheme+主机+SSRF；反斜杠/userinfo 攻击先规范化再判定
 - **媒体完整性**：白名单后缀 + Content-Type + 文件头魔数三重校验（魔数是地面真相）；`<512B` 追踪像素丢弃
 - **反追踪**：每运行随机 UA+视口、Sec-CH-UA 身份一致、curl_cffi TLS 指纹（自检回落）、stealth 注入、拟人点击、限速抖动、WebRTC 防泄漏、Camoufox 可选后端
+- **付费墙四路径（仅自有/授权内容，默认全关）**：`--spoof` 请求伪装（bot/mobile 预设+Referer 覆盖）/`--snapshot` 缓存快照情报（Wayback/archive.today 轮换）/`--softwall` 客户端干预（strip 删遮罩+解滚动锁/reader 只计数，正文零落盘）/`--text-proxy` 通用文本代理前缀；快照与代理复用跳转守卫+SSRF+正文判定，check 只报情报不改变验证结论。详见 MANUAL §10。
 - **运维安全**：日志 URL 只到 path、Cookie/代理凭证永不打印、代理开工前预检、导航错误 11 类诊断、robots 默认遵守
 
 ## 维护
 
 ```powershell
-python -u -X utf8 tests\test_security.py   # 回归闸门：229 项全过，exit 0
+python -u -X utf8 tests\test_security.py   # 回归闸门：266 项全过，exit 0
 python -X utf8 -m py_compile site_crawler.py watchflow.py tui.py
 python -u -X utf8 site_crawler.py envcheck
 ```
@@ -100,7 +106,8 @@ python -u -X utf8 site_crawler.py envcheck
 
 ## 已知限制
 
-- 只下载公开可访问的媒体：不绕付费墙、不破 DRM、不做验证码打码（人工验证是唯一通道）
+- 只下载公开可访问的媒体：不破 DRM、不做验证码打码（人工验证是唯一通道）；四路径扩展默认全关，仅限自有/授权内容研究测试
+- bot 伪装（googlebot/bingbot）对强风控站大概率 403，且无对应 TLS 指纹（强制 requests+告警）；mobile 伪装的 TLS 指纹仍是桌面 preset（curl_cffi 无移动端 preset），指纹错配风险自负
 - SESSION 混淆的站（如需 APP 级 token 的 m3u8）可能取不到流，看日志 `fetch_fail` 样本
 - 反追踪是纵深防御，不保证 100% 绕过强风控
 

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 jjjjjjjjnnjnn
-"""通用站点媒体下载器 v1.3.0: 填网址 -> 检测人机验证 -> 需验证弹窗等人工 -> 自动全站下载.
+"""通用站点媒体下载器 v1.4.0: 填网址 -> 检测人机验证 -> 需验证弹窗等人工 -> 自动全站下载.
 
 用法 (python -u -X utf8 site_crawler.py ...):
   check <url>              只检测: 该站是否需要人机验证 (不下载, 不存页面内容)
@@ -23,6 +23,15 @@
   --browser CH             浏览器通道 camoufox(推荐, C++层指纹)/chrome/edge/默认chromium
   --clone-profile PATH     克隆真实浏览器profile(Torch思路, 只读源, 隔离副本)
   --column SUB             只爬URL含该子串的栏目
+  --spoof MODE             请求伪装: googlebot/bingbot/mobile(默认off);
+                             bot类强制requests+告警, mobile同步移动视口与头
+  --spoof-referer URL      伪装Referer(只收http(s), 非法值丢弃)
+  --snapshot MODE          缓存快照探测: wayback/archive/auto(默认off);
+                             check遇验证时报快照情报, 正文只内存判定不落盘
+  --softwall MODE          客户端干预: strip(删遮罩+解滚动锁)/reader(只计数);
+                             默认off, 只操作已加载DOM不发额外请求
+  --text-proxy PREFIX      一站式文本代理前缀(通用, 不内置第三方);
+                             check遇验证时报代理情报, 正文只内存判定不落盘
   --video-first            视频优先(默认开, 只下视频/m3u8跳过图片; --no-video-first 关)
   --dl-jobs N              watch下载并发(默认3, 收获串行+下载并行)
 
@@ -62,12 +71,12 @@ import socket
 import sys
 import time
 from collections import defaultdict
-from urllib.parse import urljoin, urlsplit, urlunsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit, quote
 from urllib import robotparser
 
 import requests
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 # ---------------------------------------------------------------- 身份池
 UA_POOL = [
@@ -88,6 +97,31 @@ VIEWPORTS = [
     {"width": 1920, "height": 1080},
     {"width": 1440, "height": 900},
 ]
+MOBILE_VIEWPORTS = [
+    {"width": 412, "height": 915},
+    {"width": 390, "height": 844},
+    {"width": 360, "height": 740},
+]
+
+# 路径一: 请求伪装预设. 默认 off(桌面池不变); bot 类无对应 TLS preset,
+# 用时强制回落 requests 并告警(防"新 UA + 旧指纹"脚本信号).
+SPOOF_PRESETS = {
+    "googlebot": {
+        "ua": "Mozilla/5.0 (compatible; Googlebot/2.1; "
+              "+http://www.google.com/bot.html)",
+        "mobile": False, "platform": '"Windows"', "bot": True,
+    },
+    "bingbot": {
+        "ua": "Mozilla/5.0 (compatible; bingbot/2.0; "
+              "+http://www.bing.com/bingbot.htm)",
+        "mobile": False, "platform": '"Windows"', "bot": True,
+    },
+    "mobile": {
+        "ua": "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
+        "mobile": True, "platform": '"Android"', "bot": False,
+    },
+}
 
 VERIFY_SELECTORS = [
     ".sliderCaptcha_thumb", ".slider-captcha", ".slidercaptcha",
@@ -575,8 +609,92 @@ class Site:
 
     # -- 身份 --
     def pick_identity(self) -> None:
+        sp = self.spoof_mode()
+        if sp:
+            self.UA = SPOOF_PRESETS[sp]["ua"]
+            self.viewport = dict(random.choice(
+                MOBILE_VIEWPORTS if SPOOF_PRESETS[sp]["mobile"] else VIEWPORTS))
+            return
         self.UA = random.choice(UA_POOL)
         self.viewport = dict(random.choice(VIEWPORTS))
+
+    def spoof_mode(self) -> str:
+        """请求伪装档: off(默认)/googlebot/bingbot/mobile. 未知值归 off."""
+        m = _cfg_str(getattr(self.args, "spoof", "")) or \
+            _cfg_str(self.cfg.get("spoof"))
+        m = m.strip().lower()
+        return m if m in SPOOF_PRESETS else ""
+
+    def spoof_referer(self) -> str:
+        """伪装 Referer: 必须是显式 http(s) 绝对 URL, 无 userinfo 无换行.
+
+        无 scheme 自动补全是禁止的(会把 javascript: 洗成 http:// 前缀漏网).
+        """
+        r = _cfg_str(getattr(self.args, "spoof_referer", "")) or \
+            _cfg_str(self.cfg.get("spoof_referer"))
+        r = (r or "").strip()
+        try:
+            if any(c in r for c in ("\n", "\r", "\t", " ")):
+                return ""
+            p = urlsplit(r)
+            if p.scheme not in ("http", "https") or not p.hostname:
+                return ""
+            if "@" in (p.netloc or ""):
+                return ""
+            return urlunsplit((p.scheme, p.netloc, p.path or "/", "", ""))
+        except Exception:
+            return ""
+
+    def ref_for(self, referer: str) -> str:
+        """Referer 生效点: 伪装值优先, 否则透传调用方."""
+        return self.spoof_referer() or referer
+
+    def snapshot_mode(self) -> str:
+        """快照档: off(默认)/wayback/archive/auto. 未知值归 off."""
+        m = _cfg_str(getattr(self.args, "snapshot", "")) or \
+            _cfg_str(self.cfg.get("snapshot"))
+        m = m.strip().lower()
+        return m if m in ("wayback", "archive", "auto") else ""
+
+    def softwall_mode(self) -> str:
+        """客户端干预档: off(默认)/strip/reader. 未知值归 off."""
+        m = _cfg_str(getattr(self.args, "softwall", "")) or \
+            _cfg_str(self.cfg.get("softwall"))
+        m = m.strip().lower()
+        return m if m in ("strip", "reader") else ""
+
+    def text_proxy_base(self) -> str:
+        """一站式文本代理前缀: 显式 http(s) 绝对 URL, 无 userinfo 无空白.
+
+        不硬编码任何第三方(防投毒+防 ToS 连带); 目标 URL 由调用方
+        quote 后拼接. 非法值丢弃.
+        """
+        t = _cfg_str(getattr(self.args, "text_proxy", "")) or \
+            _cfg_str(self.cfg.get("text_proxy"))
+        t = (t or "").strip()
+        try:
+            if not t or len(t) > 500:
+                return ""
+            if re.search(r"\s|[\x00-\x1f\x7f]", t):
+                return ""
+            p = urlsplit(t)
+            if p.scheme not in ("http", "https") or not p.hostname:
+                return ""
+            if "@" in (p.netloc or ""):
+                return ""
+            return t
+        except Exception:
+            return ""
+
+    def text_proxy_url(self, url: str) -> str:
+        """代理请求地址: 前缀 + quote(目标). 前缀非法返回空."""
+        base = self.text_proxy_base()
+        if not base:
+            return ""
+        try:
+            return base + quote(url or "", safe="")
+        except Exception:
+            return ""
 
     def tls_verify(self) -> bool:
         if getattr(self.args, "insecure", False):
@@ -892,17 +1010,40 @@ def tls_selftest():
     return out
 
 
+def _tls_kind_for(site) -> str:
+    """TLS 通道选择: bot 伪装无对应 TLS preset, 强制 requests(防指纹错配).
+
+    返回 "curl_cffi" 或 "requests". 可单元测试, 不碰网络.
+    """
+    try:
+        sp = site.spoof_mode()
+        if sp and SPOOF_PRESETS[sp]["bot"]:
+            return "requests"
+    except Exception:
+        pass
+    return "curl_cffi"
+
+
 def make_session(site):
-    """下载会话: curl_cffi(chrome指纹)优先, 自检失败回落requests(每进程只警告一次)."""
+    """下载会话: curl_cffi(chrome指纹)优先, 自检失败回落requests(每进程只警告一次).
+
+    bot 伪装强制走 requests(_tls_kind_for); mobile 伪装同步
+    Sec-CH-UA-Mobile=?1 与 Platform=Android, 保头身份一致.
+    """
     global _TLS_WARNED
+    try:
+        sp = site.spoof_mode()
+        preset = SPOOF_PRESETS.get(sp, {})
+    except Exception:
+        preset = {}
     headers = {
         "User-Agent": site.UA,
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,"
                   "image/avif,image/webp,*/*;q=0.8",
         "Sec-CH-UA": _sec_ch_ua(site.UA),
-        "Sec-CH-UA-Mobile": "?0",
-        "Sec-CH-UA-Platform": '"Windows"',
+        "Sec-CH-UA-Mobile": "?1" if preset.get("mobile") else "?0",
+        "Sec-CH-UA-Platform": preset.get("platform") or '"Windows"',
         "Sec-Fetch-Site": "same-origin",
         "Sec-Fetch-Mode": "navigate",
         "Sec-Fetch-User": "?1",
@@ -911,23 +1052,32 @@ def make_session(site):
     p, _ = eff_proxy(site)
     proxies = {"http": p, "https": p} if p else {}
     kind = "requests"
-    try:
-        from curl_cffi import requests as cr
-        imp = _pick_impersonate(site.UA)
-        try:
-            _major = int((re.search(r"Chrome/(\d+)", site.UA or "") or [0, 0])[1])
-        except Exception:
-            _major = 0
-        if _major > 136:
-            site.log("WARNING UA超前指纹库(Chrome/%d>136): 用最高 preset, 易被识别, 建议升级curl_cffi"
-                     % _major)
-        s = cr.Session(impersonate=imp)
-        kind = "curl_cffi:" + imp
-    except Exception as e:
+    use_tls_spoof = _tls_kind_for(site) == "curl_cffi"
+    if not use_tls_spoof:
         if not _TLS_WARNED:
-            site.log("WARNING TLS伪装不可用(回落requests): %s" % str(e)[:100])
+            site.log("WARNING bot伪装无TLS指纹(强制requests): 易被识别, "
+                     "建议只配合快照/文本代理用")
             _TLS_WARNED = True
         s = requests.Session()
+    else:
+        try:
+            from curl_cffi import requests as cr
+            imp = _pick_impersonate(site.UA)
+            try:
+                _major = int((re.search(r"Chrome/(\d+)",
+                                        site.UA or "") or [0, 0])[1])
+            except Exception:
+                _major = 0
+            if _major > 136:
+                site.log("WARNING UA超前指纹库(Chrome/%d>136): 用最高 preset, "
+                         "易被识别, 建议升级curl_cffi" % _major)
+            s = cr.Session(impersonate=imp)
+            kind = "curl_cffi:" + imp
+        except Exception as e:
+            if not _TLS_WARNED:
+                site.log("WARNING TLS伪装不可用(回落requests): %s" % str(e)[:100])
+                _TLS_WARNED = True
+            s = requests.Session()
     try:
         s.headers.update(headers)
     except Exception as e:
@@ -1219,6 +1369,83 @@ def detect_verify(page, site=None):
         except Exception:
             pass
     return False, ""
+
+
+# ================================================================ 路径三: 客户端干预
+# 只操作已加载 DOM, 不发额外请求. strip 删遮罩+解滚动锁(上限50节点,
+# 误伤自负, 默认 off); reader 只回传计数(标题/段数/字数), 正文不出页面.
+JS_SOFTWALL_STRIP = (
+    "() => { const out = {removed: 0, unlocked: false};"
+    " try { const all = document.querySelectorAll('*');"
+    " for (const el of all) {"
+    " const cn = (typeof el.className === 'string') ? el.className : '';"
+    " const s = cn + ' ' + (el.id || '');"
+    " if (/paywall|metering|subscription-wall|subs-gate|regwall/i.test(s)) {"
+    " el.remove(); out.removed++;"
+    " if (out.removed > 50) break; } } } catch (e) {}"
+    " try { for (const t of [document.documentElement, document.body]) {"
+    " if (!t) continue;"
+    " const st = window.getComputedStyle(t);"
+    " if (st && st.overflow === 'hidden')"
+    " { t.style.overflow = 'auto'; out.unlocked = true; } } }"
+    " catch (e) {} return out; }"
+)
+JS_SOFTWALL_READER = (
+    "() => { let title = '';"
+    " try { title = (document.title || '').slice(0, 80); } catch (e) {}"
+    " let paras = 0, chars = 0;"
+    " try { const ps = document.querySelectorAll("
+    "'article p, main p, .post-content p, .article-body p');"
+    " for (const e of ps) { const t = (e.innerText || '').trim();"
+    " if (t.length > 20) { paras++; chars += t.length; } } }"
+    " catch (e) {}"
+    " return {title: title, paras: paras, chars: chars}; }"
+)
+
+
+def apply_softwall(page, site):
+    """路径三执行: 返回 {mode, removed, unlocked, paras, chars, title_len}.
+
+    reader 的 title 只记长度不记内容(防正文落日志); 全程 try 包裹,
+    浏览器异常不中断主流程.
+    """
+    res = {"mode": "", "removed": 0, "unlocked": False,
+           "paras": 0, "chars": 0, "title_len": 0}
+    try:
+        mode = site.softwall_mode()
+    except Exception:
+        return res
+    res["mode"] = mode
+    if not mode:
+        return res
+    try:
+        if mode == "strip":
+            d = page.evaluate(JS_SOFTWALL_STRIP) or {}
+            res["removed"] = int(d.get("removed", 0) or 0)
+            res["unlocked"] = bool(d.get("unlocked", False))
+            site.bump("softwall_stripped")
+        elif mode == "reader":
+            d = page.evaluate(JS_SOFTWALL_READER) or {}
+            res["paras"] = int(d.get("paras", 0) or 0)
+            res["chars"] = int(d.get("chars", 0) or 0)
+            res["title_len"] = len(str(d.get("title", "") or ""))
+            site.bump("softwall_reader")
+    except Exception:
+        pass
+    return res
+
+
+def log_softwall(site, res) -> None:
+    """干预结果日志: 只记数字, 正文零落盘零落日志."""
+    try:
+        if res.get("mode") == "strip":
+            site.log("软墙干预(strip): 移除遮罩%d 滚动解锁=%s" %
+                     (res.get("removed", 0), res.get("unlocked", False)))
+        elif res.get("mode") == "reader":
+            site.log("软墙干预(reader): 段落%d 字符%d(正文不出页面)" %
+                     (res.get("paras", 0), res.get("chars", 0)))
+    except Exception:
+        pass
 
 
 def norm_link(site, base: str, href: str) -> str:
@@ -1593,6 +1820,10 @@ def _fetch_with_retry(site, sess, url: str, referer: str, accept: str,
     """429/5xx 重试: 指数退避+抖动, 优先服从 Retry-After(封顶60s), 最多3次."""
     delays = [2.0, 4.0, 8.0]
     last = (None, url, 0)
+    try:  # 路径一: 伪装 Referer 单点覆盖, 下游全链生效
+        referer = site.ref_for(referer)
+    except Exception:
+        pass
     try:  # 对端分级自动接线: 可信代理验对端, 公共代理豁免+计数
         if _peer_enforced(site, _sess_proxy(sess)):
             enforce_peer = True
@@ -1631,6 +1862,143 @@ def _safe_url_for_cmd(url: str) -> str:
 _PL_MAX = 2 * 1048576  # 播放列表文本上限 2MB, 防内存 DoS
 _PL_KEY_RE = re.compile(r"(?i)\buri\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^,\s>]+))")
 _PL_SEG_EXT = (".ts", ".m4s", ".mp4", ".mov", ".webm", ".mkv", ".key", ".mpd")
+
+
+# ================================================================ 路径二: 缓存快照
+SNAPSHOT_DOMAINS = ("archive.ph", "archive.md", "archive.li", "archive.is")
+_SNAP_BLOCK_RE = re.compile(
+    r"just a moment|attention required|rate.{0,5}limit|too many requests"
+    r"|access denied|cf-please-wait|challenge-platform|人机验证|访问受限",
+    re.I,
+)
+_SNAP_MIN_HTML = 500  # 原始 HTML 下限(字节字符数), 太短必是错误页
+_SNAP_MIN_TEXT = 200  # 去标签正文下限
+
+
+def _read_capped(r, cap: int = 2097152) -> str:
+    """流式读正文(上限封顶, 防内存 DoS). 失败返回空串."""
+    data = b""
+    try:
+        for ch in r.iter_content(chunk=65536):
+            if not ch:
+                continue
+            data += ch[:max(0, cap - len(data))]  # 精确封顶, 不超 cap
+            if len(data) >= cap:
+                break
+    except Exception:
+        pass
+    try:
+        return data.decode("utf-8", "ignore")
+    except Exception:
+        return ""
+
+
+def _snap_text_ok(html: str) -> bool:
+    """快照正文判定: 限流/验证页拒收, 去标签后须达下限."""
+    if not html or len(html) < _SNAP_MIN_HTML:
+        return False
+    try:
+        if _SNAP_BLOCK_RE.search(html[:20000]):
+            return False
+        txt = re.sub(r"<script.*?</script>|<style.*?</style>|<[^>]+>", " ",
+                     html, flags=re.I | re.S)
+        txt = re.sub(r"\s+", " ", txt).strip()
+        return len(txt) >= _SNAP_MIN_TEXT
+    except Exception:
+        return False
+
+
+def _snap_close(r) -> None:
+    try:
+        r.close()
+    except Exception:
+        pass
+
+
+def fetch_snapshot(site, sess, url: str):
+    """路径二: 缓存快照只读探测. 返回 (ok, source, text_len).
+
+    顺序: Wayback availability API -> archive.today 轮换域(/newest/, 前2域).
+    每跳复用 _fetch_guarded(跳转守卫+SSRF+对端复检); 存档站走同一会话
+    (代理/TLS/Referer 伪装全生效); 正文只在内存判定, 不落盘.
+    """
+    if not site.snapshot_mode():
+        return False, "", 0
+    mode = site.snapshot_mode()
+    ref = site.url
+    if mode in ("wayback", "auto"):
+        try:
+            api = ("https://archive.org/wayback/available?url=" +
+                   quote(url, safe=""))
+            r, _, st = _fetch_guarded(sess, api, ref, "application/json")
+            surl = ""
+            if r is not None and st == 200:
+                try:
+                    data = json.loads(_read_capped(r, 65536))
+                finally:
+                    _snap_close(r)
+                try:
+                    closest = (data.get("archived_snapshots") or {}).get(
+                        "closest") or {}
+                    surl = closest.get("url", "") or ""
+                except Exception:
+                    surl = ""
+            if surl and re.match(r"^https?://", surl):
+                r2, _, st2 = _fetch_guarded(sess, surl, ref, "text/html")
+                if r2 is not None and st2 == 200:
+                    try:
+                        html = _read_capped(r2)
+                    finally:
+                        _snap_close(r2)
+                    if _snap_text_ok(html):
+                        return True, "wayback", len(html)
+        except Exception:
+            pass
+        if mode == "wayback":
+            return False, "", 0
+    if mode in ("archive", "auto"):
+        for d in SNAPSHOT_DOMAINS[:2]:
+            try:
+                r, _, st = _fetch_guarded(sess, "https://%s/newest/%s" % (d, url),
+                                          ref, "text/html")
+                if r is None or st != 200:
+                    continue
+                try:
+                    html = _read_capped(r)
+                finally:
+                    _snap_close(r)
+                if _snap_text_ok(html):
+                    return True, d, len(html)
+            except Exception:
+                continue
+    return False, "", 0
+
+
+# ================================================================ 路径四: 一站式文本代理
+def fetch_text_proxy(site, sess, url: str):
+    """路径四: 通用文本代理只读探测. 返回 (ok, text_len).
+
+    代理主机走 _fetch_guarded 全套守卫(SSRF/跳转/对端); 返回页复用
+    _snap_text_ok 判定; 正文只内存判定不落盘; 日志只记数字.
+    """
+    if not site.text_proxy_base():
+        return False, 0
+    try:
+        purl = site.text_proxy_url(url)
+        if not purl:
+            return False, 0
+        r, _, st = _fetch_guarded(sess, purl, site.url, "text/html")
+        if r is None or st != 200:
+            return False, 0
+        try:
+            html = _read_capped(r)
+        finally:
+            _snap_close(r)
+        if _snap_text_ok(html):
+            return True, len(html)
+    except Exception:
+        pass
+    return False, 0
 
 
 def _playlist_guard_ok(site, sess, url: str, referer: str, depth: int = 2,
@@ -2030,8 +2398,30 @@ def cmd_check(site) -> int:
         if nv:
             site.log("CHECK %s -> VERIFY-NEEDED 需人工验证 (selector:%s)"
                      % (site.url, why))
+            try:  # 路径二/四: 快照+文本代理情报(只读探测, 不改变"需验证"结论)
+                if site.snapshot_mode() or site.text_proxy_base():
+                    _ss, _ = make_session(site)
+                    if site.snapshot_mode():
+                        _ok, _src, _sz = fetch_snapshot(site, _ss, site.url)
+                        if _ok:
+                            site.log("快照可用(%s, 正文约%dKB): 仅情报参考, "
+                                     "原站仍走 wait 验证" % (_src, _sz // 1024))
+                        else:
+                            site.log("快照无可用存档")
+                    _tok, _tlen = fetch_text_proxy(site, _ss, site.url)
+                    if _tok:
+                        site.log("文本代理可用(正文约%dKB): 仅情报参考, "
+                                 "原站仍走 wait 验证" % (_tlen // 1024))
+                    elif site.text_proxy_base():
+                        site.log("文本代理无可用内容")
+            except Exception:
+                pass
             return 10
         site.log("CHECK %s -> OPEN 无验证, 可直接dl" % site.url)
+        try:  # 路径三: 软墙情报(遮罩计数/正文规模, 不改变 OPEN 结论)
+            log_softwall(site, apply_softwall(page, site))
+        except Exception:
+            pass
         return 0
     except Exception as e:
         site.log("CHECK-FAIL 诊断: " + diagnose_nav_error(str(e)))
@@ -2140,6 +2530,7 @@ def cmd_dl(site, batch: int = 60) -> int:
                 site.log("REVERIFY 又出现验证, 停止. 请重跑 wait.")
                 stop_verify = True
                 break
+            log_softwall(site, apply_softwall(page, site))  # 路径三: 遮罩挡收割先清
             media, anchors = harvest(page, site, url)
             for u in net_cap:  # 网络层捕获优先(播放器 JS 动态拉流 DOM 看不见)
                 if u not in media:
@@ -2416,6 +2807,19 @@ def build_parser():
                     const=False)
     ap.add_argument("--dl-jobs", type=int, default=3,
                     help="watch下载并发1-8, 0=按CPU自动")
+    ap.add_argument("--spoof", default="",
+                    choices=["", "off", "googlebot", "bingbot", "mobile"],
+                    help="请求伪装: googlebot/bingbot/mobile(默认off, 桌面池)")
+    ap.add_argument("--spoof-referer", default="",
+                    help="伪装Referer(只收http(s), 默认空=透传)")
+    ap.add_argument("--snapshot", default="",
+                    choices=["", "off", "wayback", "archive", "auto"],
+                    help="缓存快照探测(默认off)")
+    ap.add_argument("--softwall", default="",
+                    choices=["", "off", "strip", "reader"],
+                    help="客户端干预(默认off)")
+    ap.add_argument("--text-proxy", default="",
+                    help="一站式文本代理前缀(默认空=不用)")
     return ap
 
 

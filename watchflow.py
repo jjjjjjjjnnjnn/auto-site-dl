@@ -323,6 +323,7 @@ def cmd_watch(site, batch: int = 10, dl_jobs: int = 3) -> int:
             if nv:
                 site.log("REVERIFY 又出现验证, 停止. 请重跑 wait.")
                 break
+            C.log_softwall(site, C.apply_softwall(page, site))  # 路径三: 遮罩挡播放先清
             mu, mkind = watch_one(site, page, 0, d, 50, sess)
             if mu:
                 jobs.append((mkind, mu, d))

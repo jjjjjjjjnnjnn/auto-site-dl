@@ -109,6 +109,16 @@ def build_cmd(mode: str, url: str, opts: dict):
         cmd.append("--video-first")
     else:
         cmd.append("--no-video-first")
+    if opts.get("spoof"):
+        cmd += ["--spoof", opts["spoof"]]
+    if opts.get("spoof_referer"):
+        cmd += ["--spoof-referer", opts["spoof_referer"]]
+    if opts.get("snapshot"):
+        cmd += ["--snapshot", opts["snapshot"]]
+    if opts.get("softwall"):
+        cmd += ["--softwall", opts["softwall"]]
+    if opts.get("text_proxy"):
+        cmd += ["--text-proxy", opts["text_proxy"]]
     if mode == "watch":
         cmd += ["--dl-jobs", str(int(opts.get("jobs", 3)))]
     return cmd
@@ -135,7 +145,14 @@ def action_page(url: str, opts: dict):
              (("⚙ 浏览器: %s (切)" % (opts["browser"] or "chromium"), "t_browser")),
              (("⚙ 克隆profile: %s (切)" % ("开" if opts["clone"] else "关"), "t_clone")),
              (("⚙ 中转代理: %s (设)" % (opts["proxy"] or "无"), "t_proxy")),
-             (("⚙ 栏目过滤: %s (设)" % (opts["column"] or "无"), "t_column")),
+              (("⚙ 栏目过滤: %s (设)" % (opts["column"] or "无"), "t_column")),
+              (("⚙ 伪装: %s (切)" % (opts["spoof"] or "off"), "t_spoof")),
+              (("⚙ 伪装Referer: %s (设)" % (opts["spoof_referer"] or "无"),
+                "t_spoofref")),
+              (("⚙ 快照: %s (切)" % (opts["snapshot"] or "off"), "t_snap")),
+              (("⚙ 干预: %s (切)" % (opts["softwall"] or "off"), "t_soft")),
+              (("⚙ 文本代理: %s (设)" % (opts["text_proxy"] or "无"),
+                "t_textpx")),
              (("⚙ 视频优先: %s (切)" % ("开" if opts["video"] else "关"), "t_video")),
              (("⚙ 每轮页数: %d (设)" % opts["batch"], "t_batch")),
              (("⚙ 下载并发: %d (设)" % opts["jobs"], "t_jobs")),
@@ -162,6 +179,33 @@ def action_page(url: str, opts: dict):
         if r == "t_proxy":
             try:
                 opts["proxy"] = input("代理URL(空=清除): ").strip()
+            except (EOFError, KeyboardInterrupt):
+                pass
+            continue
+        if r == "t_spoof":
+            order = ["", "googlebot", "bingbot", "mobile"]
+            opts["spoof"] = order[(order.index(opts["spoof"]) + 1) % len(order)] \
+                if opts["spoof"] in order else "googlebot"
+            continue
+        if r == "t_spoofref":
+            try:
+                opts["spoof_referer"] = input("伪装Referer(空=清除): ").strip()
+            except (EOFError, KeyboardInterrupt):
+                pass
+            continue
+        if r == "t_snap":
+            order = ["", "wayback", "archive", "auto"]
+            opts["snapshot"] = order[(order.index(opts["snapshot"]) + 1) % len(order)] \
+                if opts["snapshot"] in order else "wayback"
+            continue
+        if r == "t_soft":
+            order = ["", "strip", "reader"]
+            opts["softwall"] = order[(order.index(opts["softwall"]) + 1) % len(order)] \
+                if opts["softwall"] in order else "strip"
+            continue
+        if r == "t_textpx":
+            try:
+                opts["text_proxy"] = input("文本代理前缀(空=清除): ").strip()
             except (EOFError, KeyboardInterrupt):
                 pass
             continue
@@ -222,8 +266,9 @@ def site_page(opts: dict):
 def main() -> int:
     opts = {"cdn": True, "http": False, "batch": 60, "proxy": "", "column": "",
             "video": True, "jobs": 3, "insecure": False, "browser": "",
-            "clone": False}
-    print("auto_site_dl TUI v1.3.0 (q 返回, Ctrl+C 停止任务)")
+            "clone": False, "spoof": "", "spoof_referer": "", "snapshot": "",
+            "softwall": "", "text_proxy": ""}
+    print("auto_site_dl TUI v1.4.0 (q 返回, Ctrl+C 停止任务)")
     site_page(opts)
     return 0
 

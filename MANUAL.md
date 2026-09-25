@@ -1,6 +1,6 @@
 # 操作手册（MANUAL）
 
-对应版本：v1.3.0 ｜ 适用系统：Windows 10/11（PowerShell）｜ Python ≥ 3.9
+对应版本：v1.4.0 ｜ 适用系统：Windows 10/11（PowerShell）｜ Python ≥ 3.9
 
 ---
 
@@ -192,13 +192,16 @@ python -u -X utf8 site_crawler.py dl https://example.com/ 60 --allow-cdn --no-vi
 | 文件无扩展名 | 旧版遗留；跑 `purge` 补 |
 | `TLS伪装不可用(回落requests)` | 装 `pip install curl-cffi`（每进程只报一次） |
 | 浏览器报毒/文件被隔离 | 杀毒软件误报；加信任区后从隔离区恢复 |
+| bot 伪装直接 403 | 强风控站识破非足迹流量；改 mobile 或关伪装走正常验证 |
+| 快照无可用存档/限流 | archive.today 域名轮换+限流不稳定；`auto` 顺序有超时预算，失败即过不断点 |
+| strip 后页面排版乱 | 误删正文容器（50 节点上限内）；关 `--softwall` 重进页面即恢复 |
 
 ---
 
 ## 7. 日常维护
 
 ```powershell
-python -u -X utf8 tests\test_security.py   # 回归：229 项全过 exit 0（改代码必跑）
+python -u -X utf8 tests\test_security.py   # 回归：266 项全过 exit 0（改代码必跑）
 python -X utf8 -m py_compile site_crawler.py watchflow.py tui.py
 python -u -X utf8 site_crawler.py envcheck
 ```
@@ -229,4 +232,69 @@ python -u -X utf8 site_crawler.py envcheck
 - **robots 惩罚**：取失败记 `robots-unknown` 并限速 +1s，不再静默放行
 - **供应链**：`requirements.lock` 含 4 包 hash（`--require-hashes` 安装）+ 运行时 `verify_lock` 版本钉死 + envcheck 自测行；TLS preset 缺失/UA 超前会警告
 - **拟人点击**：三次贝塞尔（单侧控制点）+ easeInOut 速度 + 远距过冲修正 + 终点微颤 + 框内随机落点
-- 回归闸门：`tests/test_security.py` 229 项
+- 回归闸门：`tests/test_security.py` 229 项（当时）
+
+---
+
+## 10. 付费墙四路径扩展（v1.4.0，仅自有/授权内容，默认全关）
+
+适用范围限定：四开关默认全部关闭，不开即零行为变化（回归 `spoof-off/snap-off/sw-off/tp-off` 锁定）。
+仅供自有站点或已获授权的内容做测试研究；遵守目标站 ToS 与版权。
+
+### 10.1 路径一：请求伪装 `--spoof` + `--spoof-referer`
+
+```powershell
+python -u -X utf8 site_crawler.py check https://example.com/ --spoof googlebot
+python -u -X utf8 site_crawler.py dl https://example.com/ 60 --spoof mobile `
+  --spoof-referer https://www.google.com/
+```
+
+- 三档：`googlebot` / `bingbot` / `mobile`；`config.json` 同名键亦可（`"spoof"`, `"spoof_referer"`）
+- bot 类无对应 TLS preset，强制走 requests 并 WARNING（防"新 UA + 旧指纹"脚本信号）
+- mobile 同步移动视口（412×915 档）+ `Sec-CH-UA-Mobile: ?1` + Platform Android，保头身份一致
+- Referer 必须是显式 http(s) 绝对 URL，无 scheme 自动补全是禁止的（防 `javascript:` 洗白，回归锁定）；`javascript:/data:`、userinfo、换行注入一律丢弃
+- 浏览器通道（chromium/chrome/edge/camoufox）不受 `--spoof` 影响（真浏览器自带指纹）
+- 不装扩展的手动等价：DevTools → Network Conditions → 取消自动 → 粘贴 bot UA 刷新测试
+
+### 10.2 路径二：缓存快照 `--snapshot wayback|archive|auto`
+
+```powershell
+python -u -X utf8 site_crawler.py check https://example.com/ --snapshot auto
+```
+
+- 顺序：Wayback availability API → archive.today 轮换域（`archive.ph/.md`，`/newest/`）
+- 每跳复用跳转守卫（≤5 跳 + SSRF + 公网单播 + 对端复检），存档站走同一会话（代理/TLS/Referer 全生效）
+- 正文判定：限流/验证页关键字拒收（`Just a moment` 等），去标签后 ≥200 字才算命中
+- 正文只在内存判定、不落盘；check 只报"快照可用(来源, 约N KB)"情报，不改变"需验证"结论
+- 手动等价：`curl -sL "https://archive.org/wayback/available?url=目标URL"`；
+  archive.today 轮换域（`.ph → .md → .li → .is`）依次试 `/newest/目标URL`
+
+### 10.3 路径三：客户端干预 `--softwall strip|reader`
+
+```powershell
+python -u -X utf8 site_crawler.py watch https://example.com/ 10 --softwall strip
+```
+
+- `strip`：删 class/id 命中 `paywall|metering|subscription-wall|subs-gate|regwall` 的节点（上限 50）+ 解 `overflow:hidden` 滚动锁；接在 dl 收割前 / watch 详情页 / check 情报三处真调用
+- `reader`：只回传计数（段落数/字符数/标题长度），正文不出页面、不落盘、不落日志（回归锁定无泄漏）
+- 只操作已加载 DOM，不发额外请求；浏览器异常不中断主流程
+- 手动等价：计量墙清 Cookie/无痕模式；F12 搜正文句子确认软墙后删遮罩节点并把 `overflow:hidden` 改 `auto`；Stylus 持久化规则：
+  ```css
+  .paywall-overlay, [class*="paywall" i] { display: none !important; }
+  html, body { overflow: auto !important; }
+  ```
+  纯文本软墙可直接按 F9（Firefox）/ Safari 阅读器视图
+
+### 10.4 路径四：一站式文本代理 `--text-proxy PREFIX`
+
+```powershell
+python -u -X utf8 site_crawler.py check https://example.com/ `
+  --text-proxy "https://proxyhost/articles?article="
+```
+
+- 通用前缀，不内置任何第三方域名（防投毒 + 防 ToS 连带）；示例 host 自行填写，风险自负
+- 前缀校验：显式 http(s) + 无 userinfo + 无空白 + 长度 ≤500；目标 URL 全编码拼接
+- 代理主机走全套守卫，返回页复用快照正文判定；日志只记数字，目标 query 零落盘（回归锁定）
+- check 遇验证时报"文本代理可用(约N KB)"情报，原站仍走 `wait` 验证
+
+- 回归闸门：`tests/test_security.py` 266 项（[K]伪装12 + [L]快照11 + [M]干预7 + [N]代理8）
