@@ -27,6 +27,7 @@ LINE_TEXT = ["线路", "源", "HD", "高清", "线路1", "线路2", "源1", "源
              "Line", "Source"]
 STALL_TEXT = ["缓冲", "加载中", "loading", "buffer", "下载APP", "下载App",
               "APP", "安装", "请安装"]
+_STALL_NORM = [s.lower().replace(" ", "") for s in STALL_TEXT]
 AD_HOSTS = ["doubleclick", "googlesyndication", "popads", "adserver",
             "advert", "preroll", "tracking", "analytics", "pushsdk",
             "hmtracker", "umeng", "51.la"]
@@ -192,8 +193,8 @@ def watch_one(site, page, idx: int, referer: str, budget: int = 50, sess=None):
                 return u, "m3u8"
         if media:
             return media[0], "direct"
-        txt = _player_text(page)
-        if any(k in txt for k in STALL_TEXT):
+        txt = _player_text(page).lower().replace(" ", "")
+        if any(k in txt for k in _STALL_NORM):
             stall_rounds += 1
             if stall_rounds >= 3:
                 site.log("假缓冲(APP引流)止损: %s" % C.url_for_log(referer))
@@ -355,8 +356,15 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     if not a.url:
         ap.error("需要目标URL")
+    if not re.match(r"^https?://", a.url.strip()):
+        print("URL 必须以 http(s):// 开头")
+        return 2
     import site_crawler as C
-    site = C.Site(a.url.strip(), a)
+    try:
+        site = C.Site(a.url.strip(), a)
+    except ValueError as e:
+        print("非法目标主机: %s" % e)
+        return 2
     return cmd_watch(site, a.batch, max(1, min(8, int(a.dl_jobs or 3))))
 
 

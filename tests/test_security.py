@@ -165,8 +165,151 @@ atk("seg-resolve", W.resolve_from_segments(
     ["https://h/v/seg1.ts", "https://h/v/seg2.ts"]) == "https://h/v/index.m3u8")
 atk("seg-empty", W.resolve_from_segments([]) == "")
 
+print("[H] 蓝队补丁回归(round2)")
+atk("port-huge", C.norm_url("https://h:99999/x.m3u8") == "")
+atk("port-zero", C.norm_url("https://h:0/x") == "")
+atk("port-keep", C.norm_url("https://h:8443/a") == "https://h:8443/a")
+atk("safehost-dotdot", C._safe_host("..") == "")
+atk("safehost-doubledot", C._safe_host("a..b") == "")
+atk("safehost-dash", C._safe_host("-a.com") == "")
+atk("safehost-under", C._safe_host("a_b.com") == "")
+atk("safehost-ok", C._safe_host("OK-site123.com") == "ok-site123.com")
+try:
+    C.Site("https://../", NS())
+    atk("site-traversal-block", False)
+except ValueError:
+    atk("site-traversal-block", True)
+atk("proxy-ipv6", C.check_proxy("http://[::1]:8080") == "http://[::1]:8080")
+atk("proxy-auth", C.check_proxy("http://user:pass@127.0.0.1:8080") ==
+    "http://user:pass@127.0.0.1:8080")
+atk("mask-ipv6", "\n" not in C.mask_proxy("http://[::1]:8080"))
+atk("csv-tab", C._csv_safe("\t=cmd") == "'\t=cmd")
+atk("csv-cr", C._csv_safe("\r=cmd") == "'\r=cmd")
+atk("csv-space", C._csv_safe(" =cmd") == "' =cmd")
+atk("csv-pipe", C._csv_safe("|'/c calc'!A0") == "'|'/c calc'!A0")
+atk("csv-fw", C._csv_safe("＝cmd") == "'＝cmd")
+atk("csv-bom", C._csv_safe("﻿=cmd") == "'﻿=cmd")
+atk("sniff-bm-short", C.sniff_ext(b"BM") is None)
+atk("sniff-ftyp-zero", C.sniff_ext(b"\x00\x00\x00\x00ftyp") is None)
+atk("sniff-sp-m3u8", C.sniff_ext(b"  #EXTM3U\r") is None)
+atk("sniff-bom-m3u8", C.sniff_ext("﻿#EXTM3U\n#EXT-X-VERSION:3\n".encode("utf-8")) == ".m3u8")
+atk("sniff-riff-trunc", C.sniff_ext(b"RIFF\x00\x00") is None)
+atk("pub-v6loop", C.is_public_host("::1") is False)
+atk("pub-zero", C.is_public_host("0.0.0.0") is False)
+atk("pub-mapped", C.is_public_host("::ffff:127.0.0.1") is False)
+atk("pub-dec", C.is_public_host("2130706433") is False)
+atk("pub-hex", C.is_public_host("0x7f.0.0.1") is False)
+atk("pub-oct", C.is_public_host("0177.0.0.1") is False)
+atk("pub-localdot", C.is_public_host("LOCALHOST.") is False)
+atk("cfg-str-dict", C._cfg_str({"a": 1}) == "")
+atk("cfg-list-str", C._cfg_list("a|b;c") == ["a", "b", "c"])
+atk("cfg-list-list", C._cfg_list(["a", "b"]) == ["a", "b"])
+atk("cfg-list-dict", C._cfg_list({"a": 1}) == [])
+s_col = C.Site("https://example.invalid/", NS())
+s_col.cfg["column"] = {"a": 1}
+atk("column-dict-safe", s_col.column_ok("https://example.invalid/x") is True)
+s_col.cfg["proxies"] = {"a": 1}
+atk("proxies-dict-safe", C.eff_proxy(s_col) == ("", ""))
+atk("safe-cmd-dash", C._safe_url_for_cmd("-o evil") == "")
+atk("safe-cmd-space", C._safe_url_for_cmd("https://h/a b") == "")
+atk("safe-cmd-ok", C._safe_url_for_cmd("https://h/a.m3u8?k=v") == "https://h/a.m3u8?k=v")
+atk("nav-clean", C._clean_nav_text("a\nb|c\td") == "a b c d")
+atk("imp-136", C._pick_impersonate("Mozilla/5.0 Chrome/136.0.0.0") == "chrome136")
+atk("imp-120", C._pick_impersonate("Mozilla/5.0 Chrome/120.0.0.0") == "chrome120")
+atk("imp-old", C._pick_impersonate("Mozilla/5.0 Chrome/99.0") == "chrome")
+atk("imp-ff", C._pick_impersonate("Mozilla/5.0 Firefox/133.0") == "chrome")
+s9 = C.Site("https://example.invalid/", NS())
+s9.log("line1\nline2")
+with open(s9.logf, encoding="utf-8") as _f:
+    _last = _f.read().strip().splitlines()[-1]
+atk("log-singleline", _last == "line1\\nline2")
+s_ns = C.Site("https://example.invalid/", NS())
+with open(s_ns.ckf, "w", encoding="utf-8") as _f:
+    _f.write("a=b\n.evil\tTRUE / TRUE 0 x y\n#c=commented")
+_ns_tmp = os.path.join(tempfile.gettempdir(), "ns_test_cookies.txt")
+try:
+    os.remove(_ns_tmp)
+except OSError:
+    pass
+atk("netscape-write", C._write_netscape(s_ns, _ns_tmp) is True)
+with open(_ns_tmp, encoding="utf-8") as _f:
+    _ns = _f.read().splitlines()
+atk("netscape-no-inject", len(_ns) == 2 and not any(
+    l.startswith(".evil") or l.startswith("#c") for l in _ns[1:]))
+try:
+    os.remove(_ns_tmp)
+except OSError:
+    pass
+
+
+class _FakeRaw:
+    def __init__(self, peer=None):
+        self._connection = type(" Cn", (), {
+            "sock": None if peer is None else type("Sk", (), {
+                "getpeername": (lambda self=None: (peer, 443))})()})()
+
+
+class _FakeResp:
+    def __init__(self, status=200, headers=None, url="", text="", peer=None):
+        self.status_code = status
+        self.headers = headers or {}
+        self.url = url
+        self.text = text
+        self.raw = _FakeRaw(peer)
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeSess:
+    def __init__(self, script, proxies=None):
+        self._script = list(script)
+        self.proxies = proxies or {}
+
+    def get(self, url, **kw):
+        if not self._script:
+            raise RuntimeError("no more scripted responses")
+        return self._script.pop(0)
+
+
+_sg = C.Site("https://example.invalid/", NS())
+_fs = _FakeSess([_FakeResp(200, {}, "https://8.8.8.8/x.mp4")])
+_r, _fu, _st = C._fetch_guarded(_fs, "https://8.8.8.8/x.mp4", "https://example.invalid/", "video/*")
+atk("guard-direct-ok", _r is not None and _st == 200)
+_fs2 = _FakeSess([_FakeResp(302, {"Location": "http://127.0.0.1/x"}, "https://8.8.8.8/x")])
+_r2, _fu2, _st2 = C._fetch_guarded(_fs2, "https://8.8.8.8/x", "https://example.invalid/", "*/*")
+atk("guard-redirect-ssrf", _r2 is None and _st2 == -1)
+_fs3 = _FakeSess([_FakeResp(200, {}, "https://8.8.8.8/x", peer="10.0.0.1")])
+_r3, _fu3, _st3 = C._fetch_guarded(_fs3, "https://8.8.8.8/x", "https://example.invalid/", "*/*")
+atk("guard-peer-rebind", _r3 is None and _st3 == -3)
+_fs4 = _FakeSess([_FakeResp(200, {}, "https://8.8.8.8/x", peer="10.0.0.1")],
+                 proxies={"https": "http://127.0.0.1:8080"})
+_r4, _fu4, _st4 = C._fetch_guarded(_fs4, "https://8.8.8.8/x", "https://example.invalid/", "*/*")
+atk("guard-proxy-peer-skip", _r4 is not None and _st4 == 200)
+_pl_ok = "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"keys/k\"\nseg1.ts\n"
+_fs5 = _FakeSess([_FakeResp(200, {}, "https://8.8.8.8/v/index.m3u8", text=_pl_ok)])
+atk("playlist-relative-ok",
+    C._playlist_guard_ok(_sg, _fs5, "https://8.8.8.8/v/index.m3u8",
+                         "https://example.invalid/") is True)
+_pl_bad = "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"http://127.0.0.1/k\"\nseg1.ts\n"
+_fs6 = _FakeSess([_FakeResp(200, {}, "https://8.8.8.8/v/index.m3u8", text=_pl_bad)])
+atk("playlist-key-ssrf",
+    C._playlist_guard_ok(_sg, _fs6, "https://8.8.8.8/v/index.m3u8",
+                         "https://example.invalid/") is False)
+_fs7 = _FakeSess([_FakeResp(200, {}, "https://8.8.8.8/v/index.m3u8", text="<html>nope")])
+atk("playlist-not-m3u8",
+    C._playlist_guard_ok(_sg, _fs7, "https://8.8.8.8/v/index.m3u8",
+                         "https://example.invalid/") is False)
+_fs8 = _FakeSess([_FakeResp(429, {}, "https://8.8.8.8/x"),
+                  _FakeResp(200, {}, "https://8.8.8.8/x")])
+_r8, _fu8, _st8 = C._fetch_with_retry(_sg, _fs8, "https://8.8.8.8/x",
+                                      "https://example.invalid/", "*/*")
+atk("retry-429-then-ok", _r8 is not None and _st8 == 200 and
+    _sg.counters.get("retry_429", 0) == 1)
+
 print("\nREDTEAM: %d 项全部守住" % N)
-for x in (s, s2, s2h, s2v, s2i, s6, s7, s7b, s8):
+for x in (s, s2, s2h, s2v, s2i, s6, s7, s7b, s8, s_col, s_ns, s9, _sg):
     try:
         shutil.rmtree(x.root, ignore_errors=True)
     except Exception:
