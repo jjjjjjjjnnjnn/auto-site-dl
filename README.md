@@ -65,7 +65,7 @@ auto-site-dl/
 ├── site_crawler.py       主程序（模式入口 + 安全基座 + 下载引擎链）
 ├── watchflow.py          视频深层流程（取流状态机 + 并行下载池）
 ├── tui.py                终端交互 UI
-├── tests/test_security.py 安全回归（红队自审，80 项，纯本地零网络）
+├── tests/test_security.py 安全回归（红队自审，229 项，纯本地零网络）
 ├── requirements.txt
 ├── MANUAL.md             操作手册
 ├── LICENSE               Apache-2.0
@@ -87,7 +87,7 @@ auto-site-dl/
 ## 维护
 
 ```powershell
-python -u -X utf8 tests\test_security.py   # 回归闸门：80 项全过，exit 0
+python -u -X utf8 tests\test_security.py   # 回归闸门：229 项全过，exit 0
 python -X utf8 -m py_compile site_crawler.py watchflow.py tui.py
 python -u -X utf8 site_crawler.py envcheck
 ```

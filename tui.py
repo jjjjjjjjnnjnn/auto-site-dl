@@ -223,7 +223,7 @@ def main() -> int:
     opts = {"cdn": True, "http": False, "batch": 60, "proxy": "", "column": "",
             "video": True, "jobs": 3, "insecure": False, "browser": "",
             "clone": False}
-    print("auto_site_dl TUI v1.2.0 (q 返回, Ctrl+C 停止任务)")
+    print("auto_site_dl TUI v1.3.0 (q 返回, Ctrl+C 停止任务)")
     site_page(opts)
     return 0
 
