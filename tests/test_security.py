@@ -1209,6 +1209,13 @@ atk("i18n-fallback", I18N._("no_such_key_qqq") == "no_such_key_qqq")
 atk("i18n-resolve-bad", I18N.resolve_lang("fr") == "en")
 atk("i18n-detect-shape", I18N.detect_system_lang() in ("zh", "en"))
 I18N.set_lang("auto")
+import tui as TUI  # noqa: E402
+from unittest import mock as _mock
+with _mock.patch("builtins.input", side_effect=["1"]):
+    atk("tui-pick-num", TUI.pick("t", [("a", "A"), ("b", "B")]) == "A")
+with _mock.patch("builtins.input", side_effect=["zzz", "q"]):
+    atk("tui-pick-quit", TUI.pick("t", [("a", "A")]) is None)
+atk("tui-i18n-alive", callable(I18N._) and I18N._("pick_back") != "pick_back")
 sX = C.Site("https://example.invalid/", NS())
 atk("learn-default-on", C.learn_on(sX) is True)
 atk("learn-killed",

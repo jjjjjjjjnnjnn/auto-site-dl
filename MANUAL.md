@@ -249,7 +249,7 @@ python -u -X utf8 site_crawler.py dl https://example.com/ 60 --allow-cdn --no-vi
 ## 7. 日常维护
 
 ```powershell
-python -u -X utf8 tests\test_security.py   # 回归：368 项全过 exit 0（改代码必跑）
+python -u -X utf8 tests\test_security.py   # 回归：371 项全过 exit 0（改代码必跑）
 python -X utf8 -m py_compile site_crawler.py watchflow.py tui.py i18n.py
 python -u -X utf8 site_crawler.py envcheck
 python -u -X utf8 site_crawler.py verify https://example.com/   # 离线自证下载物
@@ -456,4 +456,6 @@ python -u -X utf8 site_crawler.py updatecheck
 - 覆盖：TUI 全量双语（含危险区 YES 确认）；引擎日志暂中文（增量中）；`--lang` 已直通引擎，TUI 有"语言"开关（auto→zh→en 循环）
 - 用法：`python -u -X utf8 tui.py --lang en`；`site_crawler.py … --lang en`
 
-- 回归闸门：`tests/test_security.py` 368 项（[X]学习限制与i18n 17）
+- 回归闸门：`tests/test_security.py` 371 项（[X]学习限制与i18n 20，含 v1.8.1 TUI `pick()` 真调用 3）
+
+> v1.8.1 热修：`tui.py pick()` 的 `for i, (label, _)` 把 i18n 函数 `_` 遮蔽成字符串，TUI 启动即 `TypeError`。修为 `val`，教训——冒烟只验了键集合相等、没真调一次 `pick`；现回归用 mock input 喂 `1`/`q` 真调，`_` 再被遮蔽当场被抓。

@@ -76,7 +76,7 @@ auto-site-dl/
 ├── watchflow.py          视频深层流程（取流状态机 + 并行下载池）
 ├── tui.py                终端交互 UI（中英双语）
 ├── i18n.py               语言探测与译表（纯标准库）
-├── tests/test_security.py 安全回归（红队自审，368 项，纯本地零网络）
+├── tests/test_security.py 安全回归（红队自审，371 项，纯本地零网络）
 ├── requirements.txt
 ├── MANUAL.md             操作手册
 ├── LICENSE               Apache-2.0
@@ -107,11 +107,12 @@ auto-site-dl/
 - **自我学习 v1.8.0（有限制，见 MANUAL §14）**：本站 `learn.json` 自适应延迟（拥塞+0.5s/上限10s）+ 引擎命中榜 + 挑战记忆；无外发、不存敏感物、schema 夹紧、`--no-learn` 一键关
 - **更新检查 v1.8.0**：`updatecheck` 只问 GitHub releases 最新 tag 并通知，永不自动下载/执行
 - **i18n v1.8.0**：`i18n.py` 系统语言探测（仅 zh 回中文，其余/失败回英语），TUI 已全量双语，`--lang` 直通引擎
+- **TUI 热修 v1.8.1**：`pick()` 循环变量遮蔽 `_` 致启动即崩，已改名 + 补真调用回归（mock input 喂 `1`/`q`）
 
 ## 维护
 
 ```powershell
-python -u -X utf8 tests\test_security.py   # 回归闸门：368 项全过，exit 0
+python -u -X utf8 tests\test_security.py   # 回归闸门：371 项全过，exit 0
 python -X utf8 -m py_compile site_crawler.py watchflow.py tui.py i18n.py
 python -u -X utf8 site_crawler.py envcheck
 ```

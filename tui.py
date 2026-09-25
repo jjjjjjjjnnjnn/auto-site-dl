@@ -52,7 +52,7 @@ def _onoff(v) -> str:
 def pick(title: str, items):
     """items: [(显示, 值)]. 返回值或None(q退出). 支持数字快捷键."""
     print("\n== %s ==" % title)
-    for i, (label, _) in enumerate(items, 1):
+    for i, (label, val) in enumerate(items, 1):
         print("  %d. %s" % (i, label))
     print(_("pick_back"))
     while True:
