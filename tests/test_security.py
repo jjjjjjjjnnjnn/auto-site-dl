@@ -570,7 +570,7 @@ with open(sG.ckf, "w", encoding="utf-8") as _f:
     _f.write("a=b")
 os.utime(sG.ckf, None)  # 反 NTFS 隧道化: 删后速建同名文件会继承旧 mtime, 显式钉 now
 _fresh2, _age2 = C.session_fresh(sG)
-atk("sess-fresh", _fresh2 is True and 0 <= _age2 < 1)
+atk("sess-fresh", _fresh2 is True and -0.001 <= _age2 < 1)  # 下界容亚微秒时钟差
 import time as _t
 _old = _t.time() - 48 * 3600
 os.utime(sG.ckf, (_old, _old))
@@ -1038,7 +1038,7 @@ atk("cfg-badtype-fallback", _cfg2.get("proxies") == []
     and any("proxies" in w for w in _warns2))
 _l1 = C._take_session_lock(sT)
 _l2 = C._take_session_lock(sT)
-atk("sess-lock", _l1 is True and _l2 is False)
+atk("sess-lock", _l1 is True and _l2 is True)  # v1.9.3 自愈语义: 同进程重入放行
 try:
     os.remove(os.path.join(sT.root, ".session.lock"))
 except Exception:
@@ -1270,7 +1270,7 @@ atk("ver-cmp", C._ver_cmp("v1.10.0", "1.9.9") == 1
     and C._ver_cmp("1.7.0", "1.7.0") == 0
     and C._ver_cmp("1.6", "1.7.0") == -1)
 
-print("[Y] wait->dl 会话交接")
+print("[Y] 会话交接/空跑/锁/预设")
 with open(os.path.join(sX.root, "cookies.txt"), "w", encoding="utf-8") as _f:
     _f.write("sess=abc123; theme=dark")
 atk("ck-parse", C._load_cookie_pairs(sX) == [("sess", "abc123"),
@@ -1318,12 +1318,45 @@ C._BOT_WARNED = False
 sB0 = C.Site("https://example.invalid/", NS(spoof="googlebot"))
 atk("bot-ua", "Googlebot" in sB0.UA)
 atk("bot-warned", C._BOT_WARNED is True)
+sL = C.Site("https://lock.invalid/", NS())
+atk("lock-take", C._take_session_lock(sL) is True)
+atk("lock-self", C._take_session_lock(sL) is True)
+C._drop_session_lock(sL.root)
+atk("lock-release", not os.path.exists(os.path.join(sL.root, ".session.lock")))
+with open(os.path.join(sL.root, ".session.lock"), "w", encoding="utf-8") as _f:
+    _f.write("99999999")
+with _mock.patch.object(C, "_pid_alive", return_value=False):
+    atk("lock-stale", C._take_session_lock(sL) is True)
+with open(os.path.join(sL.root, ".session.lock"), "w", encoding="utf-8") as _f:
+    _f.write("99999999")
+with _mock.patch.object(C, "_pid_alive", return_value=True):
+    atk("lock-held", C._take_session_lock(sL) is False)
+try:
+    os.remove(os.path.join(sL.root, ".session.lock"))
+except OSError:
+    pass
+atk("pid-self", C._pid_alive(os.getpid()) is True
+    and C._pid_alive(-1) is False)
+_opts = {"cdn": False, "video": False, "spoof": "googlebot", "snapshot": "wayback",
+         "softwall": "strip", "http": True, "insecure": True, "lock": True,
+         "proxy": "http://127.0.0.1:8080", "browser": "chrome"}
+_ch = C.apply_video_preset(_opts)
+atk("preset-apply", len(_ch) == 8 and _opts["cdn"] is True and _opts["video"] is True
+    and _opts["spoof"] == "" and _opts["snapshot"] == "" and _opts["softwall"] == ""
+    and _opts["http"] is False and _opts["insecure"] is False
+    and _opts["lock"] is False
+    and _opts["proxy"] == "http://127.0.0.1:8080" and _opts["browser"] == "chrome")
+atk("preset-idem", C.apply_video_preset(_opts) == [])
+sYv = C.Site("https://video.invalid/", NS())
+sYv2 = C.Site("https://video.invalid/", NS(video_first=False))
+atk("video-default", sYv._video_first() is True and sYv2._video_first() is False)
 
 print("\nREDTEAM: %d 项全部守住" % N)
 for x in (s, s2, s2h, s2v, s2i, s6, s7, s7b, s8, s_col, s_ns, s9, _sg,
           sA, sB, sC, sD, sD2, sE, sF, sF2, sG, sH, sT, sT2,
           sK0, sK1, sK2, sK3, sL0, sL1, sL2, sL3, sL4, sL5, sL6, sL7,
-          sM0, sM1, sM2, sM3, sN0, sN1, sP, sP2, sQ, sQ2):
+          sM0, sM1, sM2, sM3, sN0, sN1, sP, sP2, sQ, sQ2,
+          sL, sYv, sYv2):
     try:
         shutil.rmtree(x.root, ignore_errors=True)
     except Exception:

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 jjjjjjjjnnjnn
-"""通用站点媒体下载器 v1.9.2: 填网址 -> 检测人机验证 -> 需验证弹窗等人工 -> 自动全站下载.
+"""通用站点媒体下载器 v1.9.3: 填网址 -> 检测人机验证 -> 需验证弹窗等人工 -> 自动全站下载.
 
 用法 (python -u -X utf8 site_crawler.py ...):
   check <url>              只检测: 该站是否需要人机验证 (不下载, 不存页面内容)
@@ -87,7 +87,7 @@ from urllib import robotparser
 
 import requests
 
-__version__ = "1.9.2"
+__version__ = "1.9.3"
 
 # ---------------------------------------------------------------- 身份池
 UA_POOL = [
@@ -768,7 +768,15 @@ def preflight(site) -> int:
     try:
         if getattr(getattr(site, "args", None), "lock_session", False):
             if not _take_session_lock(site):
-                site.log("SESSION-LOCKED 另一进程持有会话锁, 退出(防 cookies.txt 竞写劫持)")
+                try:
+                    with open(os.path.join(site.root, ".session.lock"),
+                              encoding="utf-8") as _lf:
+                        _holder = (_lf.read() or "").strip().split()[0]
+                except Exception:
+                    _holder = "?"
+                site.log("SESSION-LOCKED 会话锁被占用(持有者PID %s, %s), 退出. "
+                         "若该进程已不在请删锁文件后重跑; 单次运行可去掉 --lock-session"
+                         % (_holder, os.path.join(site.root, ".session.lock")))
                 return 2
     except Exception:
         pass
@@ -1495,6 +1503,39 @@ def _dl_warn_empty(site, visited: int) -> bool:
     except Exception:
         pass
     return False
+
+
+VIDEO_PRESET_KEYS = ("cdn", "video", "spoof", "snapshot", "softwall",
+                     "http", "insecure", "lock")
+
+
+def apply_video_preset(opts: dict):
+    """一键视频配置(纯函数, 返回改动说明 list): 以拿到视频为目标收敛开关.
+
+    开: cdn(视频多在 CDN/站外, 默认拦截会漏)/video(深层取流);
+    关: spoof(爬虫 UA 易被喂精简页)/snapshot/softwall(与拿视频无关)/http/
+    insecure(安全基座)/lock(单次运行免锁扰, 并发自取时请手动开回);
+    不动: proxy/column/browser/clone/text_proxy/hls_key/hijack/learn/lang/
+    batch/jobs(用户基础设施与偏好). 只收敛固定键, 永不记录用户自由文本.
+    """
+    target = {"cdn": True, "video": True, "spoof": "", "snapshot": "",
+              "softwall": "", "http": False, "insecure": False, "lock": False}
+    changes = []
+    try:
+        for k, v in target.items():
+            try:
+                old = opts.get(k)
+            except Exception:
+                continue
+            if old != v:
+                try:
+                    opts[k] = v
+                except Exception:
+                    continue
+                changes.append("%s: %r→%r" % (k, old, v))
+    except Exception:
+        pass
+    return changes
 
 
 def make_session(site):
@@ -2313,20 +2354,113 @@ def _check_session_perms(site) -> None:
         pass
 
 
+def _pid_alive(pid: int) -> bool:
+    """跨平台进程存活嗅探(纯本地, 无网络). 判不准时按"存活"处理(fail closed)."""
+    try:
+        pid = int(pid)
+    except Exception:
+        return True
+    if pid == os.getpid():
+        return True
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL,
+                                             wintypes.DWORD]
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            h = kernel32.OpenProcess(0x1000, False, pid)
+            if not h:
+                return False
+            try:
+                return True
+            finally:
+                kernel32.CloseHandle(h)
+        except Exception:
+            return True
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except Exception:
+        return True
+
+
+def _drop_session_lock(root: str) -> None:
+    """释放会话锁: 只删自己持有的(文件内PID==当前PID才删, 防误释他人锁)."""
+    try:
+        lock = os.path.join(root, ".session.lock")
+        with open(lock, encoding="utf-8") as f:
+            holder = int((f.read() or "").strip().split()[0])
+        if holder == os.getpid():
+            os.remove(lock)
+    except Exception:
+        pass
+
+
 def _take_session_lock(site) -> bool:
-    """--lock-session 独占: sites/<host>/.session.lock O_CREAT|O_EXCL, 已存在即 False."""
+    """--lock-session 独占 + 崩溃自愈:
+    sites/<host>/.session.lock(O_CREAT|O_EXCL, 内写持有者PID), 成功后 atexit 释放;
+    已存在时: 持有者是自己→True; 持有者已死→删陈旧锁后重取(崩溃/杀进程自愈);
+    持有者存活→False. 取锁失败不抛异常(调用方按 False 退出).
+    """
     try:
         lock = os.path.join(site.root, ".session.lock")
+    except Exception:
+        return True
+    try:
+        import atexit
+    except Exception:
+        atexit = None
+    try:
         fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         try:
             os.write(fd, str(os.getpid()).encode("utf-8", "ignore"))
         finally:
             os.close(fd)
+        try:
+            if atexit is not None:
+                atexit.register(_drop_session_lock, site.root)
+        except Exception:
+            pass
         return True
     except FileExistsError:
-        return False
+        pass
     except Exception:
         return True
+    try:
+        with open(lock, encoding="utf-8") as f:
+            holder = int((f.read() or "").strip().split()[0])
+    except Exception:
+        return False
+    if holder == os.getpid():
+        return True
+    if _pid_alive(holder):
+        return False
+    try:
+        os.remove(lock)
+    except Exception:
+        return False
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        try:
+            os.write(fd, str(os.getpid()).encode("utf-8", "ignore"))
+        finally:
+            os.close(fd)
+        try:
+            if atexit is not None:
+                atexit.register(_drop_session_lock, site.root)
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
 
 
 # ================================================================ 自我学习(本地进化, 有限制)
@@ -4136,6 +4270,10 @@ def build_parser():
                     help="一站式文本代理前缀(默认空=不用)")
     ap.add_argument("--hls-key", dest="hls_key", default="",
                     help="HLS密钥透传 URI[,IV](默认空=不用; 非法整体丢弃)")
+    ap.add_argument("--preset", default="",
+                    choices=["", "video"],
+                    help="一键配置: video=以拿到视频为目标收敛"
+                         "(开cdn/视频优先; 不动代理/栏目/浏览器/密钥等)")
     return ap
 
 
@@ -4151,6 +4289,13 @@ def main(argv=None) -> int:
     if not re.match(r"^https?://", a.url.strip()):
         print("URL 必须以 http(s):// 开头")
         return 2
+    if getattr(a, "preset", "") == "video":  # 一键视频: 只补未显式设置的项
+        if not a.allow_cdn:
+            a.allow_cdn = True
+            print("preset-video: 已开 CDN 媒体(视频多在 CDN/站外, 默认拦截会漏)")
+        if a.video_first is None:
+            a.video_first = True
+            print("preset-video: 已开视频优先深挖(显式 --no-video-first 可覆盖)")
     try:
         site = Site(a.url.strip(), a)
     except ValueError as e:

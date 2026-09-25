@@ -255,6 +255,7 @@ def action_page(url: str, opts: dict):
              ((_("m_replay"), "replay")),
              ((_("m_envcheck"), "envcheck")),
              ((_("m_updatecheck"), "updatecheck")),
+             ((_("m_preset"), "t_preset")),
              ((_("fmt_opt", _("L_cdn"), _onoff(opts["cdn"]), tg), "t_cdn")),
              ((_("fmt_opt", _("L_http"), _onoff(opts["http"]), tg), "t_http")),
              ((_("fmt_opt", _("L_ins"), _onoff(opts["insecure"]), tg), "t_ins")),
@@ -367,6 +368,21 @@ def action_page(url: str, opts: dict):
                 continue
             _cmd = build_cmd("check", url, opts) + ["--repin"]
             run_cmd(_cmd)
+            continue
+        if r == "t_preset":
+            try:
+                from site_crawler import apply_video_preset as _preset
+                _changes = _preset(opts)
+            except Exception:
+                _changes = []
+            if _changes:
+                print(_("preset_done", "; ".join(_changes)))
+            else:
+                print(_("preset_noop"))
+            try:
+                input(_("run_continue"))
+            except (EOFError, KeyboardInterrupt):
+                pass
             continue
         if r == "replay":
             try:

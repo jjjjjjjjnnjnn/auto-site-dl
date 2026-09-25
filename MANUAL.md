@@ -1,6 +1,6 @@
 # 操作手册（MANUAL）
 
-对应版本：v1.9.2 ｜ 适用系统：Windows 10/11（PowerShell）｜ Python ≥ 3.9
+对应版本：v1.9.3 ｜ 适用系统：Windows 10/11（PowerShell）｜ Python ≥ 3.9
 
 ---
 
@@ -65,10 +65,32 @@ python -u -X utf8 tui.py
 | 会话独占锁 | 关 | 防并发写 cookies.txt |
 | 劫持检测 | 关 | TOFU 证书钉扎 |
 | 证书重钉 | — | 跑 check + `--repin`（需输入 YES） |
+| 一键视频配置 | — | 动作项：收敛为拿视频组合（开 CDN/视频优先，关伪装/快照/干预/http/明文/锁），代理/栏目/浏览器/密钥不动 |
 | 自学习 | 开 | 关=不读写 learn.json |
 | 语言 | auto | 循环切：auto→zh→en |
 | 每轮页数 | 60 | dl/auto 上限 |
 | 下载并发 | 3 | watch/dl 均生效（1–8；dl 默认 3 归一为串行，显式改 N 才并发） |
+
+### 2.1 拿视频推荐配置（v1.9.3）
+
+- TUI 里先选 `🎯 一键视频配置`，再跑 `auto`。CLI 等价：
+  `python -u -X utf8 site_crawler.py auto https://example.com/ 60 --preset video`
+- 原理：视频真流几乎都在 CDN/站外（不开 CDN 等于自断一路），深层取流（视频优先）负责点封面进观看页拿真流——**不要加 `--no-video-first`**（那是关掉拿视频的主力）；bot 伪装（googlebot/bingbot）会被喂精简页，正文站不要开；快照/干预只给情报不下载正文。
+- 已登录的站：把 `浏览器` 切到 `chrome` 并开 `克隆profile`（只读复制本机登录态；需先人工用 Chrome 打开过目标站）。
+
+### 2.2 需要打字输入的选项（怎么填）
+
+| 选项 | 填什么 | 例子 |
+|---|---|---|
+| 中转代理 | 本地/远端代理地址。socks 必须 `socks5h://`（h=DNS 也走代理，防泄漏）；开工前自动预检，死了报 PROXY-DEAD | `http://127.0.0.1:8080`、`socks5h://127.0.0.1:1080` |
+| 栏目过滤 | 只爬 URL 含该子串的栏目，不填=全站 | `/vod/`、`/column/sports` |
+| 伪装Referer | 完整 `http(s)://` URL；不合规（含空格/`javascript:` 等）整条丢弃 | `https://www.google.com/` |
+| 文本代理 | 通用前缀（程序把目标 URL 拼后面）；不内置任何第三方，自己搭或填可信镜像 | `https://你的镜像/?url=` |
+| HLS密钥 | 自有/授权内容的加密 m3u8 密钥 `URI[,IV]`；IV 须 hex，非法整体丢弃 | `https://站/key.bin,0011223344556677` |
+| 克隆profile | 本机 Chrome 用户数据目录路径（只读源）；TUI 开开关自动取默认路径，CLI 用 `--clone-profile PATH` | `C:\Users\你\AppData\Local\Google\Chrome\User Data` |
+| 每轮页数/下载并发 | 纯数字（并发 1–8） | `60` / `3` |
+| 证书重钉 | 输入大写 `YES`（其他一律取消） | `YES` |
+| 会话重放自测 | 输入大写 `YES`，仅自有/授权站 | `YES` |
 
 ---
 
@@ -249,7 +271,7 @@ python -u -X utf8 site_crawler.py dl https://example.com/ 60 --allow-cdn --no-vi
 ## 7. 日常维护
 
 ```powershell
-python -u -X utf8 tests\test_security.py   # 回归：384 项全过 exit 0（改代码必跑）
+python -u -X utf8 tests\test_security.py   # 回归：393 项全过 exit 0（改代码必跑）
 python -X utf8 -m py_compile site_crawler.py watchflow.py tui.py i18n.py
 python -u -X utf8 site_crawler.py envcheck
 python -u -X utf8 site_crawler.py verify https://example.com/   # 离线自证下载物
@@ -456,7 +478,7 @@ python -u -X utf8 site_crawler.py updatecheck
 - 覆盖：TUI 全量双语（含危险区 YES 确认）；引擎日志暂中文（增量中）；`--lang` 已直通引擎，TUI 有"语言"开关（auto→zh→en 循环）
 - 用法：`python -u -X utf8 tui.py --lang en`；`site_crawler.py … --lang en`
 
-- 回归闸门：`tests/test_security.py` 384 项（[X]学习限制与i18n 23 + [Y]会话交接与空跑 10）
+- 回归闸门：`tests/test_security.py` 393 项（[X]学习限制与i18n 23 + [Y]会话交接/空跑/锁/预设 19）
 
 > v1.8.1 热修：`tui.py pick()` 的 `for i, (label, _)` 把 i18n 函数 `_` 遮蔽成字符串，TUI 启动即 `TypeError`。修为 `val`，教训——冒烟只验了键集合相等、没真调一次 `pick`；现回归用 mock input 喂 `1`/`q` 真调，`_` 再被遮蔽当场被抓。
 >
@@ -465,3 +487,5 @@ python -u -X utf8 site_crawler.py updatecheck
 > v1.9.1 会话交接（修真站 `wait→dl` 必现 REVERIFY）：此前 `wait` 存的 `cookies.txt` 两边都没人用——`open_ctx` 全分支开全新匿名上下文、`make_session` 也不读会话，`dl` 首个页面即撞滑块验证退出 4。现 `_load_cookie_pairs` 解析（夹紧：名须 RFC6265 token、值禁 CTL/分号逗号、名/值/总数封顶、同名取末）→ `_seed_ctx_cookies` 经 `add_cookies` 喂浏览器（open_ctx 四分支：camoufox/clone/plain/_boot_plain，失败静默匿名继续）+ `make_session` 置 `Cookie` 头。值与名永不落日志，只记对数与域名。`check`/`watch` 同受益（`watch` 经 `watchflow.C.open_ctx`）。注意：会话有时效（TTL），过期仍需重跑 `wait`；换浏览器通道后首次也建议重跑一次 `wait`。
 >
 > v1.9.2 空跑可观测（修"退出 0 但什么都没下"的静默）：实战发现 `dl` 收割为 0 时 SUMMARY 只有权限计数、无声 exit 0。现单页无媒体无锚点记 `harvest_zero`（首现 WARNING 一次，提示 bot UA/未渲染并指引 `diag` 对照）；收尾 `_dl_warn_empty` 整轮零下载追加 WARNING（判读指引：`diag` 媒体 0=被喂精简页/未渲染，有媒体 0 下载=下载层被拦）。退出码语义冻结（0=走完，4=验证拦），空跑是否算错由人按 WARNING 判。同版 A 方案：`--spoof googlebot|bingbot` 在 `pick_identity` 打 WARNING 一次（浏览器仍挂爬虫 UA，真 Chromium 配爬虫 UA 是机器人强信号且易被喂精简页；bot 档建议仅配合快照/文本代理，正文站请去掉 `--spoof`）。分身份方案（浏览器真人 UA + 请求层 bot UA）暂不做，待实战 `diag` 对照后再议。
+>
+> v1.9.3 锁自愈 + 视频预设：`--lock-session` 的 `.session.lock` 从无释放逻辑，第一次运行后**每次**都 SESSION-LOCKED 退出 2（之前误报为"另一进程持有"，实为自己的残留）。现持有者是自己则重入放行、持有者已死则删锁重取（`_pid_alive`：Windows 用 OpenProcess，POSIX 用 kill 0，判不准按存活处理）、正常退出经 atexit 只删自己的锁；报错改给持有者 PID + 锁路径 + 处理指引。回归把 `sess-lock` 更新为新契约（同进程重入 True），另补 lock-take/self/release/stale/held/pid-self。同版：TUI `🎯 一键视频配置` + CLI `--preset video`（`apply_video_preset` 纯函数，收敛 cdn/视频优先开、spoof/快照/干预/http/明文/锁关，不动代理/栏目/浏览器/密钥等）；MANUAL §2.1/§2.2 新增拿视频推荐配置与输入项填写指南。测试侧另修两层竞态：NTFS 隧道化（删后速建继承 48h 前 mtime，`os.utime` 钉 now）与亚微秒时钟差（`getmtime` 比 `time.time()` 新约 0.24µs，`sess-fresh` 下界加 `-0.001` epsilon；引擎判定不受影响）。
