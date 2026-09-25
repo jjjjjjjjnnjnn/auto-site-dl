@@ -1680,6 +1680,42 @@ atk("verify-bool-false", C.detect_verify(_pfn, _afn) is False
     and _afn._last_verify_sel == "")
 atk("verify-bool-nosite", C.detect_verify(_FakeDivePage(), None) is False)
 
+print("[AH] 深挖排空")
+
+
+class _RecFetch:
+    def __init__(self, ret):
+        self.calls = []
+        self.ret = ret
+
+    def __call__(self, *a):
+        self.calls.append(a)
+        return self.ret
+
+
+with _mock.patch.object(C, "_browser_guard", return_value=True), \
+        _mock.patch.object(C, "polite_sleep", lambda *a, **k: None), \
+        _mock.patch.object(C, "settle_lazy_load", lambda *a, **k: 0), \
+        _mock.patch.object(C, "fetch_m3u8", _RecFetch("/f")) as _m8, \
+        _mock.patch.object(C, "fetch_one", _RecFetch("/g")) as _m1:
+    _dsH = _FakeDiveSite()
+    _pgH = _FakeDivePage()
+    _bkH = ["https://h/s/a.m3u8"]
+    _budH = [20]
+    _gotH, _rvH = C.deep_dive(_pgH, _dsH, None, ["https://h/watch/1"],
+                              [0], _budH, _bkH)
+    atk("dive-drain", _gotH == ["/f"] and _rvH is False and _bkH == []
+        and _budH == [19] and len(_m8.calls) == 1 and len(_m1.calls) == 0
+        and _m8.calls[0][1] == "https://h/s/a.m3u8")
+with _mock.patch.object(C, "_browser_guard", return_value=True), \
+        _mock.patch.object(C, "polite_sleep", lambda *a, **k: None), \
+        _mock.patch.object(C, "settle_lazy_load") as _mS:
+    _mS.return_value = 0
+    _dsH2 = _FakeDiveSite()
+    C.deep_dive(_FakeDivePage(), _dsH2, None, ["https://h/x/1.html"],
+                [0], [20], [])
+    atk("dive-settle", _mS.call_count == 1)
+
 print("[AG] 会话备份")
 try:
     os.remove(os.path.join(sX.root, "cookies.txt"))

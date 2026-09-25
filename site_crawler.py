@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 jjjjjjjjnnjnn
-"""通用站点媒体下载器 v1.9.11: 填网址 -> 检测人机验证 -> 需验证弹窗等人工 -> 自动全站下载.
+"""通用站点媒体下载器 v1.9.12: 填网址 -> 检测人机验证 -> 需验证弹窗等人工 -> 自动全站下载.
 
 用法 (python -u -X utf8 site_crawler.py ...):
   check <url>              只检测: 该站是否需要人机验证 (不下载, 不存页面内容)
@@ -87,7 +87,7 @@ from urllib import robotparser
 
 import requests
 
-__version__ = "1.9.11"
+__version__ = "1.9.12"
 
 # ---------------------------------------------------------------- 身份池
 UA_POOL = [
@@ -3697,12 +3697,15 @@ def _same_host(site, url: str) -> bool:
         return False
 
 
-def deep_dive(page, site, sess, anchors, idx: int, budget: int):
+def deep_dive(page, site, sess, anchors, idx: int, budget: int,
+              cap_bucket=None):
     """详情/观看页深挖: 每页至多2个, 全局预算封顶. 拿 video/source/m3u8 真流.
 
     两轮: 关键词命中优先; 零命中时回退试探同站前 2 个(门户页详情链无关键词
     时兜底, 如 /x/123.html 类; 同站约束防漫游, 同样走守卫/验证/预算, 记
     dive_fallback). 非标锚点不再抛错(直接跳过). 无锚点可跟记 dive_no_anchors.
+    详情页加沉降(滚触发懒挂载播放器) + 即时排空网络捕获(不等下个列表迭代,
+    无下页时不丢失; cap_bucket 传 net_cap, 消费即清).
     """
     got = []
     state = [0]  # 本页已跟进数(至多2)
@@ -3729,6 +3732,7 @@ def deep_dive(page, site, sess, anchors, idx: int, budget: int):
         try:
             page.goto(a, wait_until="domcontentloaded", timeout=30000)
             think(page, 800)
+            settle_lazy_load(page, site)  # 滚触发懒挂载(播放器常此时才拉流)
         except Exception:
             return False, False
         nv = detect_verify(page, site)
@@ -3761,6 +3765,23 @@ def deep_dive(page, site, sess, anchors, idx: int, budget: int):
                 if f:
                     got.append(f)
                     idx[0] += 1
+        if cap_bucket is not None:  # 即时排空本页导航捕获(不等下个列表迭代)
+            try:
+                _drained = list(cap_bucket)
+                del cap_bucket[:]
+            except Exception:
+                _drained = []
+            for u in _drained:
+                try:
+                    if (u or "").lower().endswith(".m3u8"):
+                        f = fetch_m3u8(site, u, idx[0], a)
+                    else:
+                        f = fetch_one(site, sess, u, idx[0], a, "deep")
+                    if f:
+                        got.append(f)
+                        idx[0] += 1
+                except Exception:
+                    continue
         polite_sleep(site)
         return False, True
 
@@ -4068,7 +4089,8 @@ def cmd_dl(site, batch: int = 60, dl_jobs: int = 1) -> int:
                     except Exception:
                         pass
             if site._video_first():
-                _, reverify = deep_dive(page, site, sess, anchors, idx, budget)
+                _, reverify = deep_dive(page, site, sess, anchors, idx, budget,
+                                        net_cap)
                 if reverify:
                     site.log("REVERIFY 又出现验证, 停止. 请重跑 wait.")
                     stop_verify = True

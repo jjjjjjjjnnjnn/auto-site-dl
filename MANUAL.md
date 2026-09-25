@@ -1,6 +1,6 @@
 # 操作手册（MANUAL）
 
-对应版本：v1.9.11 ｜ 适用系统：Windows 10/11（PowerShell）｜ Python ≥ 3.9
+对应版本：v1.9.12 ｜ 适用系统：Windows 10/11（PowerShell）｜ Python ≥ 3.9
 
 ---
 
@@ -271,7 +271,7 @@ python -u -X utf8 site_crawler.py dl https://example.com/ 60 --allow-cdn --no-vi
 ## 7. 日常维护
 
 ```powershell
-python -u -X utf8 tests\test_security.py   # 回归：422 项全过 exit 0（改代码必跑）
+python -u -X utf8 tests\test_security.py   # 回归：424 项全过 exit 0（改代码必跑）
 python -X utf8 -m py_compile site_crawler.py watchflow.py tui.py i18n.py
 python -u -X utf8 site_crawler.py envcheck
 python -u -X utf8 site_crawler.py verify https://example.com/   # 离线自证下载物
@@ -478,7 +478,7 @@ python -u -X utf8 site_crawler.py updatecheck
 - 覆盖：TUI 全量双语（含危险区 YES 确认）；引擎日志暂中文（增量中）；`--lang` 已直通引擎，TUI 有"语言"开关（auto→zh→en 循环）
 - 用法：`python -u -X utf8 tui.py --lang en`；`site_crawler.py … --lang en`
 
-- 回归闸门：`tests/test_security.py` 422 项（[X]23 + [Y]19 + [Z]7 + [AA]3 + [AB]3 + [AC]5 + [AD]3 + [AE]3 + [AF]3 + [AG]会话备份 2）
+- 回归闸门：`tests/test_security.py` 424 项（[X]23 + [Y]19 + [Z]7 + [AA]3 + [AB]3 + [AC]5 + [AD]3 + [AE]3 + [AF]3 + [AG]2 + [AH]深挖排空 2）
 
 > v1.8.1 热修：`tui.py pick()` 的 `for i, (label, _)` 把 i18n 函数 `_` 遮蔽成字符串，TUI 启动即 `TypeError`。修为 `val`，教训——冒烟只验了键集合相等、没真调一次 `pick`；现回归用 mock input 喂 `1`/`q` 真调，`_` 再被遮蔽当场被抓。
 >
@@ -500,8 +500,10 @@ python -u -X utf8 site_crawler.py updatecheck
 >
 > v1.9.8 诚实梯子（修重试"换了个寂寞"）：实战发现梯子第 2 步日志写"已换身份束"但身份束号不变（只换了 UA/视口，`run_id` 未动），第 3 步写"换通道→chrome"但匿名简报仍显示 chromium（显示绕过了 `_eff_channel`）。现重试真换 `run_id`，简报显示有效通道。另 `_goto` 落盘 `_last_nav_hint`，verdict 按末次错误分类给处置：证书类→ `--insecure` 须知（跳过校验有中间人风险，建议同开 `--hijack-check`）；代理类→查 `--proxy` 链路；其他→配代理/查 URL；未配快照/文本时代理提示 `--snapshot wayback` 碰运气（只读情报）。程序永不自动降 TLS 校验（红线，须用户显式承担）。`[AD]` 锁定通道显示/导航 hint 落盘/身份轮换。
 >
-> v1.9.11 会话备份（实战：某站 `sites/<host>/cookies.txt` 在两次运行之间凭空消失，非程序删除——引擎内除 purge 外无删除会话代码）：`wait` 存会话时同写 `cookies.txt.bak`（0600）；`_load_cookie_pairs` 主文件缺失/空时只读兜底备份（记 `session-bak-used` + WARNING 提示重跑 wait），主备双无保持返回空。`[AG]` 锁定兜底与主优先。注意：备份只防文件丢失，不防会话过期；盲测 harness（blindreap，repo 外个人 PPE）实测证实新鲜上下文即使注入 cookie 仍吃滑块壳（3.3KB），信任绑在暖机上下文——persistent profile 上下文复用列为下版候选，需拍板（稳定身份 vs 每轮换身份的取舍）。
->
 > v1.9.9 通道保持（修"check 切 chrome 能进、dl 掉回 chromium 又撞墙"）：梯子第 3 步切到的通道旧版在 check 结束即清零，wait/dl 全走默认通道。现覆盖保留到 `auto` 整轮结束（try/finally 跑完才清），wait 与 dl 同享胜利通道。另补两处静默：`dl` 首跳即断（visited=0）旧版无任何计数，现记 `dl_no_entry` + WARNING；`deep_dive` 无锚点可跟旧版无声跳过，现记 `dive_no_anchors` + 一行日志——与"有链不跟"（`dive_fallback` 未触发/关键词命中）区分开。`[AE]` 锁定：dl 阶段读到的确为 escalated 通道、结束后清零、零进入与无锚点计数。
 >
-> v1.9.10 布尔契约（内部逻辑只返布尔，文字只在展示点拼）：`_goto` 旧版直接返回诊断文本串（""=成功）作流程控制，`detect_verify` 旧版返回（布尔，选择器串）。现 `_goto` 返 True/False（NAV-FAIL 日志照打，hint 照落 `site._last_nav_hint`），`detect_verify` 返 True/False（命中选择器照落 `site._last_verify_sel`）；6 处调用方（check/wait/dl/diag/nav + watchflow 两处）同步翻转，旧 `sess-lock` 外的旧断言（`goto-guard-block`/`goto-hint`）按新契约更新。`diagnose_nav_error` 仍返文本（它本身就是展示文本工厂，不在契约内），`cmd_*` 退出码与数据元组（session/fresh/快照）保持不动。`[AF]` 锁定真假分支与落盘字段。
+> v1.9.10 布尔契约（内部逻辑只返布尔，文字只在展示点拼）：`_goto` 旧版直接返回诊断文本串（""=成功）作流程控制，`detect_verify` 旧版返回（布尔，选择器串）。现 `_goto` 返 True/False（NAV-FAIL 日志照打，hint 照落 `site._last_nav_hint`），`detect_verify` 返 True/False（命中选择器照落 `site._last_verify_sel`）；6 处调用方（check/wait/dl/diag/nav + watchflow 两处）同步翻转，旧断言（`goto-guard-block`/`goto-hint`）按新契约更新。`diagnose_nav_error` 仍返文本（它本身就是展示文本工厂，不在契约内），`cmd_*` 退出码与数据元组（session/fresh/快照）保持不动。`[AF]` 锁定真假分支与落盘字段。
+>
+> v1.9.11 会话备份（实战：某站 `sites/<host>/cookies.txt` 在两次运行之间凭空消失，非程序删除——引擎内除 purge 外无删除会话代码）：`wait` 存会话时同写 `cookies.txt.bak`（0600）；`_load_cookie_pairs` 主文件缺失/空时只读兜底备份（记 `session-bak-used` + WARNING 提示重跑 wait），主备双无保持返回空。`[AG]` 锁定兜底与主优先。注意：备份只防文件丢失，不防会话过期；盲测 harness（blindreap，repo 外个人 PPE）实测证实新鲜上下文即使注入 cookie 仍吃滑块壳（3.3KB），信任绑在暖机上下文——persistent profile 上下文复用列为下版候选，需拍板（稳定身份 vs 每轮换身份的取舍）。
+>
+> v1.9.12 深挖排空（修"详情页进了但流没出来"）：盲测 `dl` 显示关键词命中的详情页被跟进（无回退/无锚点行）却零产出——旧 `deep_dive` 只 think 800ms，且导航中网络捕获的流要等下个列表迭代才消费（无下页即 stranded）。现详情页加沉降（滚触发懒挂载播放器）+ `net_cap` 传进深挖即时消费即清。`[AH]` 锁定排空语义与沉降调用。
