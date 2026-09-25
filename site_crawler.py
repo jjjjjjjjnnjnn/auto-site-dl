@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 jjjjjjjjnnjnn
-"""通用站点媒体下载器 v1.9.3: 填网址 -> 检测人机验证 -> 需验证弹窗等人工 -> 自动全站下载.
+"""通用站点媒体下载器 v1.9.4: 填网址 -> 检测人机验证 -> 需验证弹窗等人工 -> 自动全站下载.
 
 用法 (python -u -X utf8 site_crawler.py ...):
   check <url>              只检测: 该站是否需要人机验证 (不下载, 不存页面内容)
@@ -87,7 +87,7 @@ from urllib import robotparser
 
 import requests
 
-__version__ = "1.9.3"
+__version__ = "1.9.4"
 
 # ---------------------------------------------------------------- 身份池
 UA_POOL = [
@@ -103,6 +103,18 @@ UA_POOL = [
     "(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36 Edg/144.0.0.0",
 ]
 VIEWPORTS = [
     {"width": 1366, "height": 768},
@@ -526,8 +538,13 @@ def polite_sleep(site, base=None) -> None:
 
 
 def think(page, ms: int = 600) -> None:
+    """拟人停顿 ±25% 抖动(防固定节拍被判脚本), 下限 100ms. 调用方传标称值即可."""
     try:
-        page.wait_for_timeout(max(100, int(ms)))
+        jit = max(100, int(int(ms) * random.uniform(0.75, 1.25)))
+    except Exception:
+        jit = max(100, int(ms) if isinstance(ms, (int, float)) else 600)
+    try:
+        page.wait_for_timeout(jit)
     except Exception:
         pass
 

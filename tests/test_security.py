@@ -11,6 +11,7 @@
 import argparse
 import hashlib
 import os
+import re
 import shutil
 import stat
 import sys
@@ -1351,12 +1352,56 @@ sYv = C.Site("https://video.invalid/", NS())
 sYv2 = C.Site("https://video.invalid/", NS(video_first=False))
 atk("video-default", sYv._video_first() is True and sYv2._video_first() is False)
 
+print("[Z] 随机默认与安全基座")
+_d = C.build_parser().parse_args(["dl", "https://example.invalid/", "60"])
+atk("secure-defaults", _d.allow_cdn is False and _d.allow_http is False
+    and _d.insecure is False and _d.spoof == "" and _d.snapshot == ""
+    and _d.softwall == "" and _d.lock_session is False and _d.hijack_check is False
+    and _d.browser == "" and _d.preset == "" and _d.video_first is None
+    and _d.text_proxy == "" and _d.hls_key == "" and _d.proxy == "")
+_majors = []
+for _u in C.UA_POOL:
+    _m = re.search(r"Chrome/(\d+)", _u)
+    if _m:
+        _majors.append(int(_m.group(1)))
+atk("pool-hygiene", len(C.UA_POOL) >= 10
+    and all(_u.startswith("Mozilla/5.0 ") for _u in C.UA_POOL)
+    and all(_m <= 150 for _m in _majors) and len(_majors) >= 8)
+atk("pool-aligned", all(C._pick_impersonate(_u) in C._IMPERSONATE_OK
+                        for _u in C.UA_POOL))
+
+
+class _FakePage:
+    def __init__(self):
+        self.slept = []
+
+    def wait_for_timeout(self, ms):
+        self.slept.append(ms)
+
+
+_fp = _FakePage()
+C.think(_fp, 1000)
+atk("think-jit", 750 <= _fp.slept[-1] <= 1250)
+_fp2 = _FakePage()
+C.think(_fp2, 50)
+atk("think-floor", _fp2.slept[-1] >= 100)
+import random as _rnd
+_rnd.seed(77)
+_sR1 = C.Site("https://rng1.invalid/", NS())
+_rnd.seed(77)
+_sR2 = C.Site("https://rng2.invalid/", NS())
+atk("rng-flows", _sR1.UA == _sR2.UA and _sR1.UA in C.UA_POOL
+    and _sR1.run_id == _sR2.run_id)
+atk("viewport-sane", all(320 <= _v["width"] <= 2560
+                         and 480 <= _v["height"] <= 1440
+                         for _v in C.VIEWPORTS + C.MOBILE_VIEWPORTS))
+
 print("\nREDTEAM: %d 项全部守住" % N)
 for x in (s, s2, s2h, s2v, s2i, s6, s7, s7b, s8, s_col, s_ns, s9, _sg,
           sA, sB, sC, sD, sD2, sE, sF, sF2, sG, sH, sT, sT2,
           sK0, sK1, sK2, sK3, sL0, sL1, sL2, sL3, sL4, sL5, sL6, sL7,
           sM0, sM1, sM2, sM3, sN0, sN1, sP, sP2, sQ, sQ2,
-          sL, sYv, sYv2):
+          sL, sYv, sYv2, _sR1, _sR2):
     try:
         shutil.rmtree(x.root, ignore_errors=True)
     except Exception:

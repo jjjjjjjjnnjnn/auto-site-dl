@@ -76,7 +76,7 @@ auto-site-dl/
 ├── watchflow.py          视频深层流程（取流状态机 + 并行下载池）
 ├── tui.py                终端交互 UI（中英双语）
 ├── i18n.py               语言探测与译表（纯标准库）
-├── tests/test_security.py 安全回归（红队自审，393 项，纯本地零网络）
+├── tests/test_security.py 安全回归（红队自审，400 项，纯本地零网络）
 ├── requirements.txt
 ├── MANUAL.md             操作手册
 ├── LICENSE               Apache-2.0
@@ -112,11 +112,12 @@ auto-site-dl/
 - **会话交接 v1.9.1**：`wait` 存的 `cookies.txt` 自动喂给 `dl`/`check`/`watch` 的浏览器（`add_cookies`）与下载会话（`Cookie` 头）；解析夹紧防投毒（名须 token、值禁 CTL/分号逗号、封顶），值永不落日志
 - **空跑可观测 v1.9.2**：单页收割为 0 记 `harvest_zero` + 首现 WARNING；整轮零下载追加 WARNING（指引跑 `diag` 对照）；`--spoof googlebot|bingbot` 打 WARNING（浏览器仍挂爬虫 UA，易被喂精简页，建议仅配合快照/文本代理）
 - **锁自愈+视频预设 v1.9.3**：`.session.lock` 从不释放致 `--lock-session` 第二次必卡死，现持有者死则删锁重取 + 正常退出 atexit 释放 + 报错给 PID/路径；TUI `🎯 一键视频配置` / CLI `--preset video` 收敛拿视频组合（开 cdn/视频优先，关 spoof/快照/干预/http/明文/锁）；`sess-fresh` 修 NTFS 隧道化与亚微秒时钟竞态
+- **随机默认 v1.9.4**：UA 池 6→12（Chrome 131–150 + Edge 144 + Firefox，各对齐 TLS preset 无超前警告）+ `think()` ±25% 抖动；已有随机（视口/run_id/代理轮换/延迟高斯抖动/鼠标拟人）保持；安全基座默认锁定（cdn/http/明文/spoof/快照/锁/劫持全关）并 en 回归钉死
 
 ## 维护
 
 ```powershell
-python -u -X utf8 tests\test_security.py   # 回归闸门：393 项全过，exit 0
+python -u -X utf8 tests\test_security.py   # 回归闸门：400 项全过，exit 0
 python -X utf8 -m py_compile site_crawler.py watchflow.py tui.py i18n.py
 python -u -X utf8 site_crawler.py envcheck
 ```
