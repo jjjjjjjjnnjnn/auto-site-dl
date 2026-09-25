@@ -217,3 +217,16 @@ python -u -X utf8 site_crawler.py envcheck
 - **记账与日志**：CSV 防注入全集（含全角/前导空白/BOM/竖线）；日志恒单行；导航文本去换行分隔符；cookie 临时文件过滤注入行 + 0600 权限 + 用完即删
 - **代理**：保留认证信息（user:pass@）、IPv6 方括号；Crawl-delay 自动抬高限速下限
 - 回归闸门：`tests/test_security.py` 135 项，详见仓库
+
+---
+
+## 9. Round4 说明（v1.2.0+）
+
+- **播放列表纵深守卫**：2MB 封顶流式读；KEY 正则大小写不敏感+双/单/无引号；子 playlist 递归跟进（深度 2、上限 6）；跟跳 Location 反斜杠转正、非 http(s) scheme 直接拦
+- **熔断防刷白**：近 10 次滑窗失败≥5 熔断 10 分钟，成功只衰减不洗白
+- **分池**：浏览器长流程走 sticky（`proxy_sticky` 定死或池内 TTL 钉选，默认 30 分钟），下载遍历走随机轮换；自建可信代理（`proxy_trusted`）同样验对端 IP，公共代理豁免并记 `peer-skipped`
+- **会话 TTL**：`cookies.txt` 按 mtime 计龄（`session_ttl_h`，默认 24），过期提示重跑 `wait`
+- **robots 惩罚**：取失败记 `robots-unknown` 并限速 +1s，不再静默放行
+- **供应链**：`requirements.lock` 含 4 包 hash（`--require-hashes` 安装）+ 运行时 `verify_lock` 版本钉死 + envcheck 自测行；TLS preset 缺失/UA 超前会警告
+- **拟人点击**：三次贝塞尔（单侧控制点）+ easeInOut 速度 + 远距过冲修正 + 终点微颤 + 框内随机落点
+- 回归闸门：`tests/test_security.py` 227 项

@@ -263,6 +263,11 @@ class _FakeResp:
         self.raw = _FakeRaw(peer)
         self.closed = False
 
+    def iter_content(self, chunk=65536):
+        data = (self.text or "").encode("utf-8", "ignore")
+        for i in range(0, len(data), chunk):
+            yield data[i:i + chunk]
+
     def close(self):
         self.closed = True
 
@@ -321,8 +326,9 @@ sA.cfg["proxies"] = ["http://127.0.0.1:18081", "http://127.0.0.1:18082"]
 sA.report_proxy("http://127.0.0.1:18081", False)
 sA.report_proxy("http://127.0.0.1:18081", False)
 atk("cool-two-ok", sA._cooling("http://127.0.0.1:18081") is False)
-sA.report_proxy("http://127.0.0.1:18081", False)
-atk("cool-three-hit", sA._cooling("http://127.0.0.1:18081") is True)
+for _ in range(3):
+    sA.report_proxy("http://127.0.0.1:18081", False)
+atk("cool-five-hit", sA._cooling("http://127.0.0.1:18081") is True)
 picks = [sA.rotate_proxy() for _ in range(6)]
 atk("cool-avoid", all(p == "http://127.0.0.1:18082" for p in picks))
 sA.report_proxy("http://127.0.0.1:18082", True)
@@ -437,9 +443,170 @@ finally:
     _il.reload(C)
     shutil.rmtree(_tmp_tools, ignore_errors=True)
 
+print("[J] round4: 递归守卫/分池/贝塞尔/自测")
+_pl_sq = "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI='http://127.0.0.1/k'\nseg1.ts\n"
+_fsJ1 = _FakeSess([_FakeResp(200, {}, "https://8.8.8.8/v/index.m3u8", text=_pl_sq)])
+atk("playlist-squote",
+    C._playlist_guard_ok(_sg, _fsJ1, "https://8.8.8.8/v/index.m3u8",
+                         "https://example.invalid/") is False)
+_pl_lw = "#EXTM3U\n#ext-x-key:METHOD=AES-128,URI=\"http://127.0.0.1/k\"\nseg1.ts\n"
+_fsJ2 = _FakeSess([_FakeResp(200, {}, "https://8.8.8.8/v/index.m3u8", text=_pl_lw)])
+atk("playlist-lower",
+    C._playlist_guard_ok(_sg, _fsJ2, "https://8.8.8.8/v/index.m3u8",
+                         "https://example.invalid/") is False)
+_pl_nq = "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=http://127.0.0.1/k\nseg1.ts\n"
+_fsJ3 = _FakeSess([_FakeResp(200, {}, "https://8.8.8.8/v/index.m3u8", text=_pl_nq)])
+atk("playlist-noquote",
+    C._playlist_guard_ok(_sg, _fsJ3, "https://8.8.8.8/v/index.m3u8",
+                         "https://example.invalid/") is False)
+_pl_master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=100\nhttps://8.8.8.8/v/r.m3u8\n"
+_pl_rend = "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"http://127.0.0.1/k\"\nseg1.ts\n"
+_fsJ4 = _FakeSess([
+    _FakeResp(200, {}, "https://8.8.8.8/v/index.m3u8", text=_pl_master),
+    _FakeResp(200, {}, "https://8.8.8.8/v/r.m3u8", text=_pl_rend)])
+atk("playlist-nested",
+    C._playlist_guard_ok(_sg, _fsJ4, "https://8.8.8.8/v/index.m3u8",
+                         "https://example.invalid/") is False)
+_pl_master_ok = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=100\nrend/r.m3u8\n"
+_pl_rend_ok = "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"keys/k\"\nseg1.ts\n"
+_fsJ5 = _FakeSess([
+    _FakeResp(200, {}, "https://8.8.8.8/v/index.m3u8", text=_pl_master_ok),
+    _FakeResp(200, {}, "https://8.8.8.8/v/rend/r.m3u8", text=_pl_rend_ok)])
+atk("playlist-nested-ok",
+    C._playlist_guard_ok(_sg, _fsJ5, "https://8.8.8.8/v/index.m3u8",
+                         "https://example.invalid/") is True)
+_fsJ6 = _FakeSess([_FakeResp(200, {"Content-Length": str(3 * 1048576)},
+                             "https://8.8.8.8/v/index.m3u8", text="#EXTM3U\n")])
+atk("playlist-oversize",
+    C._playlist_guard_ok(_sg, _fsJ6, "https://8.8.8.8/v/index.m3u8",
+                         "https://example.invalid/") is False)
+for _loc in ["javascript:alert(1)", "data:text/html,hi", "file:///etc/passwd"]:
+    _fsJ7 = _FakeSess([_FakeResp(302, {"Location": _loc}, "https://8.8.8.8/x")])
+    _rJ, _, _sJ = C._fetch_guarded(_fsJ7, "https://8.8.8.8/x",
+                                   "https://example.invalid/", "*/*")
+    atk("hop-scheme-" + _loc.split(":")[0], _rJ is None)
+_fsJ8 = _FakeSess([_FakeResp(302, {"Location": "https:\\\\127.0.0.1\\x"},
+                             "https://8.8.8.8/x")])
+_rJ8, _, _ = C._fetch_guarded(_fsJ8, "https://8.8.8.8/x", "https://example.invalid/", "*/*")
+atk("hop-backslash", _rJ8 is None)
+_fsJ9 = _FakeSess([_FakeResp(307, {"Location": "/a"}, "https://8.8.8.8/x")] * 6)
+_rJ9, _, _sJ9 = C._fetch_guarded(_fsJ9, "https://8.8.8.8/x", "https://example.invalid/", "*/*")
+atk("hop-loop-converge", _rJ9 is None)
+_fsJ10 = _FakeSess([_FakeResp(302, ["Location", "http://127.0.0.1/"], "https://8.8.8.8/x")])
+_rJ10, _, _ = C._fetch_guarded(_fsJ10, "https://8.8.8.8/x", "https://example.invalid/", "*/*")
+atk("hop-bad-headers", _rJ10 is None)
+_fsJ11 = _FakeSess([_FakeResp("200", {}, "https://8.8.8.8/x")])
+_rJ11, _, _sJ11 = C._fetch_guarded(_fsJ11, "https://8.8.8.8/x", "https://example.invalid/", "*/*")
+atk("hop-bad-status", _rJ11 is None and _sJ11 == 0)
+sE = C.Site("https://example.invalid/", NS())
+sE.cfg["proxies"] = ["http://127.0.0.1:18081", "http://127.0.0.1:18082"]
+for _ in range(5):
+    sE.report_proxy("http://127.0.0.1:18081", False)
+    sE.report_proxy("http://127.0.0.1:18081", False)
+    sE.report_proxy("http://127.0.0.1:18081", True)
+atk("cool-brushwhite", sE._cooling("http://127.0.0.1:18081") is True)
+atk("cool-stat-decay", sE.proxy_stat["http://127.0.0.1:18081"][1] == 5)
+sE.report_proxy("http://127.0.0.1:18081", True)
+atk("cool-stat-decay2", sE.proxy_stat["http://127.0.0.1:18081"][1] == 4)
+atk("peer-noproxy", C._peer_enforced(sE, "") is False)
+atk("peer-public", C._peer_enforced(sE, "http://127.0.0.1:18081") is False)
+atk("peer-skipped-bump", sE.counters.get("peer-skipped", 0) >= 1)
+sE.cfg["proxy_trusted"] = ["http://127.0.0.1:18081"]
+atk("peer-trusted", C._peer_enforced(sE, "http://127.0.0.1:18081") is True)
+sT = C.Site("https://example.invalid/", NS())
+sT.cfg["proxy_trusted"] = ["http://127.0.0.1:18081"]
+_fsT1 = _FakeSess([_FakeResp(200, {}, "https://8.8.8.8/x", peer="10.0.0.1")],
+                  proxies={"https": "http://127.0.0.1:18081"})
+_rT1, _, _sT1 = C._fetch_with_retry(sT, _fsT1, "https://8.8.8.8/x",
+                                    "https://example.invalid/", "*/*")
+atk("enforce-wired-trusted", _rT1 is None and _sT1 == -3)
+sT2 = C.Site("https://example.invalid/", NS())
+_fsT2 = _FakeSess([_FakeResp(200, {}, "https://8.8.8.8/x", peer="10.0.0.1")],
+                  proxies={"https": "http://127.0.0.1:18081"})
+_rT2, _, _sT2 = C._fetch_with_retry(sT2, _fsT2, "https://8.8.8.8/x",
+                                    "https://example.invalid/", "*/*")
+atk("enforce-wired-public", _rT2 is not None and _sT2 == 200
+    and sT2.counters.get("peer-skipped", 0) >= 1)
+_fsJ12 = _FakeSess([_FakeResp(200, {}, "https://8.8.8.8/x", peer="10.0.0.1")],
+                   proxies={"https": "http://127.0.0.1:18081"})
+_rJ12, _, _sJ12 = C._fetch_guarded(_fsJ12, "https://8.8.8.8/x",
+                                   "https://example.invalid/", "*/*",
+                                   enforce_peer=True)
+atk("guard-enforce-peer", _rJ12 is None and _sJ12 == -3)
+sF = C.Site("https://example.invalid/", NS())
+sF.cfg["proxies"] = ["http://127.0.0.1:18081", "http://127.0.0.1:18082"]
+_p1, _o1 = C.eff_proxy(sF, "browser")
+atk("pool-sticky", _o1 == "sticky" and _p1 in sF._proxy_list())
+_p2, _ = C.eff_proxy(sF, "browser")
+atk("pool-sticky-ttl", _p2 == _p1)
+sF.cfg["proxy_sticky"] = "http://127.0.0.1:18099"
+atk("pool-sticky-cfg", C.eff_proxy(sF, "browser")[0] == "http://127.0.0.1:18099")
+sF.cfg.pop("proxy_sticky")
+sF._sticky_ts = 0
+_p3, _ = C.eff_proxy(sF, "browser")
+atk("pool-sticky-expire", _p3 in sF._proxy_list())
+sF2 = C.Site("https://example.invalid/", NS())
+atk("pool-dl-single", C.eff_proxy(sF2, "dl") == ("", ""))
+atk("ease-0", C._ease_in_out(0) == 0.0)
+atk("ease-1", C._ease_in_out(1) == 1.0)
+atk("ease-half", abs(C._ease_in_out(0.5) - 0.5) < 1e-9)
+atk("ease-mono", C._ease_in_out(0.25) < C._ease_in_out(0.75))
+_pts = C._bezier_path(0, 0, 400, 300)
+atk("bezier-n", 25 <= len(_pts) <= 110)
+atk("bezier-end", abs(_pts[-1][0] - 400) < 1e-6 and abs(_pts[-1][1] - 300) < 1e-6)
+atk("bezier-short", C._bezier_path(0, 0, 3, 4) == [(3, 4)])
+atk("bezier-oneside", len({1 if (y - 0.75 * x) > 0 else -1 if (y - 0.75 * x) < 0 else 0
+                           for x, y in _pts}) <= 3)
+sG = C.Site("https://example.invalid/", NS())
+try:
+    os.remove(sG.ckf)
+except OSError:
+    pass
+_fresh1, _age1 = C.session_fresh(sG)
+atk("sess-nofile", _fresh1 is True and _age1 == -1.0)
+with open(sG.ckf, "w", encoding="utf-8") as _f:
+    _f.write("a=b")
+_fresh2, _age2 = C.session_fresh(sG)
+atk("sess-fresh", _fresh2 is True and 0 <= _age2 < 1)
+import time as _t
+_old = _t.time() - 48 * 3600
+os.utime(sG.ckf, (_old, _old))
+_fresh3, _age3 = C.session_fresh(sG)
+atk("sess-stale", _fresh3 is False and _age3 >= 47)
+sG.cfg["session_ttl_h"] = 72
+atk("sess-ttl-cfg", C.session_fresh(sG)[0] is True)
+
+
+class _BoomSess:
+    proxies = {}
+
+    def get(self, url, **kw):
+        raise RuntimeError("dns down")
+
+
+sH = C.Site("https://example.invalid/", NS())
+sH.ensure_robots(_BoomSess())
+atk("robots-unknown", sH.counters.get("robots-unknown", 0) == 1)
+atk("robots-penalty", float(sH.cfg.get("delay", 0)) >= 2.0)
+sH.ensure_robots(_BoomSess())
+atk("robots-once", sH.counters.get("robots-unknown", 0) == 1)
+_locks = C.verify_lock()
+atk("lock-shape", isinstance(_locks, list) and len(_locks) == 4)
+atk("lock-match", all("≠" not in c and c not in ("未安装", "缺失", "不可用")
+                      for _, _, c in _locks))
+_tlsst = C.tls_selftest()
+atk("tls-selftest-shape", isinstance(_tlsst, dict) and len(_tlsst) >= 5)
+atk("imp-future", C._pick_impersonate("Mozilla/5.0 Chrome/999.0.0.0") == "chrome136")
+atk("guard-data", C._browser_guard(sH, "data:text/html,hi") is False)
+atk("guard-blob", C._browser_guard(sH, "blob:https://example.invalid/x") is False)
+atk("guard-v6loop", C._browser_guard(sH, "http://[::1]/") is False)
+atk("guard-userhost", C._browser_guard(sH, "http://evil@127.0.0.1/") is False)
+atk("guard-trail", C._browser_guard(sH, "http://127.0.0.1./x") is False)
+atk("guard-upper", C._browser_guard(sH, "HTTP://127.0.0.1/X") is False)
+
 print("\nREDTEAM: %d 项全部守住" % N)
 for x in (s, s2, s2h, s2v, s2i, s6, s7, s7b, s8, s_col, s_ns, s9, _sg,
-          sA, sB, sC, sD, sD2):
+          sA, sB, sC, sD, sD2, sE, sF, sF2, sG, sH, sT, sT2):
     try:
         shutil.rmtree(x.root, ignore_errors=True)
     except Exception:

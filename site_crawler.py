@@ -513,7 +513,7 @@ def _browser_guard(site, url: str) -> bool:
 
 def preflight(site) -> int:
     """开工预检: 代理已死直接拦下(返回2), 不带病空跑."""
-    p, origin = eff_proxy(site)
+    p, origin = eff_proxy(site, "browser")
     if p and not proxy_alive(p):
         site.log("PROXY-DEAD 代理不可用(%s %s), 停止. 检查代理进程与端口."
                  % (origin, mask_proxy(p)))
@@ -565,6 +565,9 @@ class Site:
         self.last_proxy = ""  # 上次出口(轮换避重)
         self.proxy_cool = {}  # 代理 -> 冷却截止(unix 时间)
         self.proxy_stat = {}  # 代理 -> [成功, 失败]
+        self.proxy_hist = {}  # 代理 -> 近10次成败(防刷白)
+        self._sticky_proxy = ""  # 浏览器粘滞出口
+        self._sticky_ts = 0.0
         self._alive_cache = {}  # 代理存活缓存 {proxy: (ts, bool)}
         self._camoufox_cm = None
         self._robots = None
@@ -593,20 +596,26 @@ class Site:
             return False
 
     def report_proxy(self, proxy: str, ok: bool) -> None:
-        """代理健康记账: 连败3次进冷却10分钟; 成功清零. 支撑持续更换与故障转移."""
+        """代理健康记账: 近10次滑窗失败≥5即熔断10分钟, 成功只衰减不洗白.
+
+        防"2败1成"刷白钉死劣质出口.
+        """
         if not proxy:
             return
         st = self.proxy_stat.get(proxy, [0, 0])
+        hist = self.proxy_hist.get(proxy, []) if hasattr(self, "proxy_hist") else []
         if ok:
             st[0] += 1
-            st[1] = 0
-            self.proxy_cool.pop(proxy, None)
+            st[1] = max(0, st[1] - 1)
+            hist = (hist + [True])[-10:]
         else:
             st[1] += 1
-            if st[1] >= 3 and proxy not in self.proxy_cool:
+            hist = (hist + [False])[-10:]
+            if hist.count(False) >= 5 and proxy not in self.proxy_cool:
                 self.proxy_cool[proxy] = time.time() + 600
                 self.log("代理熔断10分钟: %s" % mask_proxy(proxy))
         self.proxy_stat[proxy] = st
+        self.proxy_hist[proxy] = hist
 
     def alive_ok(self, proxy: str, ttl: int = 60) -> bool:
         """存活检查带缓存(TTL 60s), 防每文件一次 TCP 探测拖慢."""
@@ -631,6 +640,29 @@ class Site:
         p = random.choice(cands)
         self.last_proxy = p
         return p
+
+    def sticky_proxy(self) -> str:
+        """浏览器粘滞出口: 登录态/长流程 IP 稳定. 配置 proxy_sticky 优先,
+        否则池内随机钉一个, TTL(proxy_sticky_ttl 分钟, 默认30)后重选."""
+        cfg_one = check_proxy(_cfg_str(self.cfg.get("proxy_sticky")))
+        if cfg_one:
+            return cfg_one
+        pool = [p for p in self._proxy_list() if not self._cooling(p)] \
+            or self._proxy_list()
+        if not pool:
+            return ""
+        try:
+            ttl = float(self.cfg.get("proxy_sticky_ttl", 30) or 30) * 60
+        except Exception:
+            ttl = 1800.0
+        now = time.time()
+        if self._sticky_proxy and self._sticky_proxy in pool \
+                and now - self._sticky_ts < ttl:
+            return self._sticky_proxy
+        cands = [p for p in pool if p != self._sticky_proxy] or pool
+        self._sticky_proxy = random.choice(cands)
+        self._sticky_ts = now
+        return self._sticky_proxy
 
     def failover(self, sess) -> bool:
         """出口故障转移: 当前出口连败即换一个非冷却代理写入会话并重试."""
@@ -710,7 +742,12 @@ class Site:
             else:
                 rp.parse(["User-agent: *", "Disallow:"])
         except Exception:
-            self.log("robots获取失败(放行)")
+            self.bump("robots-unknown")  # 取失败不再静默放行: 记账+惩罚性限速
+            try:
+                self.cfg["delay"] = float(self.cfg.get("delay", 1.2) or 1.2) + 1.0
+            except Exception:
+                pass
+            self.log("robots获取失败(未知: 限速+1s)")
             rp.parse(["User-agent: *", "Disallow:"])
         self._robots = rp
         try:  # Crawl-delay: 对方要慢, 我们就更慢(礼貌下限)
@@ -753,10 +790,16 @@ class Site:
             self.log("  fail样本: " + f)
 
 
-def eff_proxy(site):
-    """代理生效顺序: 站点proxies随机轮换(>=2条, 避重避冷却) > 站点单条 >
+def eff_proxy(site, purpose: str = "dl"):
+    """代理生效顺序分池:
+    browser(浏览器长流程): proxy_sticky配置 > 池内粘滞钉选(TTL) > 通用顺序;
+    dl(下载遍历): 站点proxies随机轮换(>=2条, 避重避冷却) > 站点单条 >
     命令行手动 > 站点proxy > 系统代理."""
     lst = site._proxy_list()
+    if purpose == "browser":
+        sp = site.sticky_proxy()
+        if sp:
+            return sp, "sticky"
     if len(lst) >= 2:
         return site.rotate_proxy(), "rotated"
     if len(lst) == 1:
@@ -799,6 +842,56 @@ def _pick_impersonate(ua: str) -> str:
     return "chrome"
 
 
+def verify_lock():
+    """供应链版本钉死检查: 已安装版本必须 == requirements.lock, 漂移即报.
+
+    返回 [(包, 锁定版, 实际版/状态)]. 离线可用, 是 hash 锁之外的第二道门.
+    """
+    out = []
+    pins = {}
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "requirements.lock"), encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                m = re.match(r"^([A-Za-z0-9_.\-]+)==([^\s\\]+)", line)
+                if m:
+                    pins[m.group(1).lower().replace("-", "_")] = m.group(2)
+    except Exception:
+        return [("requirements.lock", "可读", "缺失")]
+    try:
+        from importlib.metadata import version, PackageNotFoundError
+    except Exception:
+        return [("importlib.metadata", "可用", "不可用")]
+    for pkg, want in sorted(pins.items()):
+        try:
+            got = version(pkg)
+        except PackageNotFoundError:
+            got = "未安装"
+        out.append((pkg, want, got if got == want else got + "≠漂移"))
+    return out
+
+
+def tls_selftest():
+    """TLS preset 自测(纯本地零流量): 逐个试构造 curl_cffi Session, 返回 {preset: ok}."""
+    out = {}
+    try:
+        from curl_cffi import requests as cr
+    except Exception:
+        return {}
+    for name in _IMPERSONATE_OK:
+        try:
+            s = cr.Session(impersonate=name)
+            try:
+                s.close()
+            except Exception:
+                pass
+            out[name] = True
+        except Exception:
+            out[name] = False
+    return out
+
+
 def make_session(site):
     """下载会话: curl_cffi(chrome指纹)优先, 自检失败回落requests(每进程只警告一次)."""
     global _TLS_WARNED
@@ -821,6 +914,13 @@ def make_session(site):
     try:
         from curl_cffi import requests as cr
         imp = _pick_impersonate(site.UA)
+        try:
+            _major = int((re.search(r"Chrome/(\d+)", site.UA or "") or [0, 0])[1])
+        except Exception:
+            _major = 0
+        if _major > 136:
+            site.log("WARNING UA超前指纹库(Chrome/%d>136): 用最高 preset, 易被识别, 建议升级curl_cffi"
+                     % _major)
         s = cr.Session(impersonate=imp)
         kind = "curl_cffi:" + imp
     except Exception as e:
@@ -991,8 +1091,42 @@ def close_ctx(pw, browser, ctx) -> None:
         pass
 
 
+def _ease_in_out(t: float) -> float:
+    t = max(0.0, min(1.0, t))
+    if t < 0.5:
+        return 4.0 * t * t * t
+    return 1.0 - ((-2.0 * t + 2.0) ** 3) / 2.0
+
+
+def _bezier_path(x0, y0, x1, y1, rng=None):
+    """三次贝塞尔路径点列: 起终连线法线单侧取控制点(防 S 形), spread 随距离."""
+    import math
+    rng = rng or random
+    dx, dy = x1 - x0, y1 - y0
+    dist = math.hypot(dx, dy)
+    if dist < 8:
+        return [(x1, y1)]
+    nx, ny = -dy / dist, dx / dist
+    side = rng.choice((-1.0, 1.0))
+    spread = dist * rng.uniform(0.08, 0.2)
+    j1 = rng.uniform(0.25, 0.45) * side * spread
+    j2 = rng.uniform(0.25, 0.45) * side * spread
+    c1 = (x0 + dx * 0.3 + nx * j1 * 3, y0 + dy * 0.3 + ny * j1 * 3)
+    c2 = (x0 + dx * 0.7 + nx * j2 * 3, y0 + dy * 0.7 + ny * j2 * 3)
+    n = max(25, min(110, int(dist / 8)))
+    pts = []
+    for i in range(1, n + 1):
+        t = _ease_in_out(i / n)
+        mt = 1.0 - t
+        x = mt**3 * x0 + 3 * mt * mt * t * c1[0] + 3 * mt * t * t * c2[0] + t**3 * x1
+        y = mt**3 * y0 + 3 * mt * mt * t * c1[1] + 3 * mt * t * t * c2[1] + t**3 * y1
+        pts.append((x, y))
+    return pts
+
+
 def human_click(page, locator, timeout: int = 8000) -> bool:
-    """拟人点击: 等可见 -> 分段移动 -> 落点抖动 -> 思考停顿 -> 点."""
+    """拟人点击: 等可见 -> 贝塞尔路径(单侧控制点+ease速度) -> 远距偶发过冲修正 ->
+    落点抖动+终点微颤 -> 思考停顿 -> 点."""
     try:
         locator.wait_for(state="visible", timeout=timeout)
         try:
@@ -1000,12 +1134,39 @@ def human_click(page, locator, timeout: int = 8000) -> bool:
         except Exception:
             box = None
         if box:
-            x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+            vw = box.get("width", 0) or 0
+            vh = box.get("height", 0) or 0
+            px = box["x"] + vw * random.uniform(0.3, 0.7)
+            py = box["y"] + vh * random.uniform(0.3, 0.7)
             try:
-                page.mouse.move(x + random.uniform(-30, 30), y + random.uniform(-20, 20),
-                                steps=7)
-                page.mouse.move(x + random.uniform(-3, 3), y + random.uniform(-3, 3),
-                                steps=3)
+                sx, sy = 120.0, 300.0
+                try:
+                    pos = page.mouse._pos if hasattr(page.mouse, "_pos") else None
+                    if pos:
+                        sx, sy = float(pos[0]), float(pos[1])
+                except Exception:
+                    pass
+                import math
+                dist = math.hypot(px - sx, py - sy)
+                for x, y in _bezier_path(sx, sy, px, py):
+                    try:
+                        page.mouse.move(x, y)
+                    except Exception:
+                        break
+                if dist > 500 and random.random() < 0.3:
+                    try:  # 过冲后回拉修正
+                        page.mouse.move(px + random.uniform(6, 14),
+                                        py + random.uniform(-4, 4))
+                        think(page, 120)
+                        page.mouse.move(px, py)
+                    except Exception:
+                        pass
+                for _ in range(random.randint(3, 5)):  # 终点微颤
+                    try:
+                        page.mouse.move(px + random.uniform(-1.5, 1.5),
+                                        py + random.uniform(-1.5, 1.5))
+                    except Exception:
+                        break
             except Exception:
                 pass
             think(page, random.uniform(300, 900))
@@ -1333,7 +1494,39 @@ def _sess_proxy(sess) -> str:
         return ""
 
 
-def _fetch_guarded(sess, url: str, referer: str, accept: str, max_hops: int = 5):
+def _peer_enforced(site, proxy: str) -> bool:
+    """对端分级: 自建可信代理(proxy_trusted)同样验对端 IP;
+    公共代理豁免并记 peer-skipped(可审计)."""
+    if not proxy:
+        return False
+    try:
+        trusted = _cfg_list(site.cfg.get("proxy_trusted"))
+    except Exception:
+        trusted = []
+    if proxy in trusted:
+        return True
+    try:
+        site.bump("peer-skipped")
+    except Exception:
+        pass
+    return False
+
+
+def session_fresh(site):
+    """会话 TTL: cookies.txt 按 mtime 计龄, 超 session_ttl_h(默认24)即过期."""
+    try:
+        ttl = float(site.cfg.get("session_ttl_h", 24) or 24)
+    except Exception:
+        ttl = 24.0
+    try:
+        age_h = (time.time() - os.path.getmtime(site.ckf)) / 3600.0
+    except Exception:
+        return True, -1.0
+    return age_h <= ttl, age_h
+
+
+def _fetch_guarded(sess, url: str, referer: str, accept: str, max_hops: int = 5,
+                   enforce_peer: bool = False):
     """守卫式 GET: 纯手动跟跳转, 每跳主机名 SSRF 守卫, 落定后对端复检(直连时).
 
     返回 (resp, final_url, status). resp 为 None 表示被拦/失败, status 供重试判决.
@@ -1353,7 +1546,9 @@ def _fetch_guarded(sess, url: str, referer: str, accept: str, max_hops: int = 5)
         except Exception:
             return None, cur, -2
         try:
-            status = int(getattr(r, "status_code", 0) or 0)
+            status = getattr(r, "status_code", 0)
+            if not isinstance(status, int) or isinstance(status, bool):
+                status = 0  # 非 int 状态一律视为异常, 不信任
         except Exception:
             status = 0
         if status in (301, 302, 303, 307, 308):
@@ -1367,7 +1562,10 @@ def _fetch_guarded(sess, url: str, referer: str, accept: str, max_hops: int = 5)
                 pass
             if not loc:
                 return None, cur, status
-            cur = urljoin(cur, loc)
+            nxt = urljoin(cur, loc.replace("\\", "/"))  # 与 norm_url 同语义, 防分裂
+            if not re.match(r"^https?://", nxt):
+                return None, cur, status  # javascript:/data:/file: 等直接拦
+            cur = nxt
             continue
         if status != 200:
             try:
@@ -1375,12 +1573,13 @@ def _fetch_guarded(sess, url: str, referer: str, accept: str, max_hops: int = 5)
             except Exception:
                 pass
             return None, cur, status
-        if not _proxied(sess) and not _peer_is_public(r):
-            try:
-                r.close()
-            except Exception:
-                pass
-            return None, cur, -3
+        if not _proxied(sess) or enforce_peer:
+            if not _peer_is_public(r):
+                try:
+                    r.close()
+                except Exception:
+                    pass
+                return None, cur, -3
         try:
             final = getattr(r, "url", None) or cur
         except Exception:
@@ -1389,12 +1588,19 @@ def _fetch_guarded(sess, url: str, referer: str, accept: str, max_hops: int = 5)
     return None, cur, status
 
 
-def _fetch_with_retry(site, sess, url: str, referer: str, accept: str):
+def _fetch_with_retry(site, sess, url: str, referer: str, accept: str,
+                      enforce_peer: bool = False):
     """429/5xx 重试: 指数退避+抖动, 优先服从 Retry-After(封顶60s), 最多3次."""
     delays = [2.0, 4.0, 8.0]
     last = (None, url, 0)
+    try:  # 对端分级自动接线: 可信代理验对端, 公共代理豁免+计数
+        if _peer_enforced(site, _sess_proxy(sess)):
+            enforce_peer = True
+    except Exception:
+        pass
     for i in range(4):
-        r, final, status = _fetch_guarded(sess, url, referer, accept)
+        r, final, status = _fetch_guarded(sess, url, referer, accept,
+                                          enforce_peer=enforce_peer)
         if r is not None:
             return r, final, status
         if status not in (429, 500, 502, 503, 504):
@@ -1422,27 +1628,55 @@ def _safe_url_for_cmd(url: str) -> str:
     return u
 
 
-def _playlist_guard_ok(site, sess, url: str, referer: str) -> bool:
-    """m3u8 播放列表守卫: 自取文本, 绝对地址的 KEY/分片逐条过 SSRF 守卫再交引擎.
+_PL_MAX = 2 * 1048576  # 播放列表文本上限 2MB, 防内存 DoS
+_PL_KEY_RE = re.compile(r"(?i)\buri\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^,\s>]+))")
+_PL_SEG_EXT = (".ts", ".m4s", ".mp4", ".mov", ".webm", ".mkv", ".key", ".mpd")
+
+
+def _playlist_guard_ok(site, sess, url: str, referer: str, depth: int = 2,
+                       _seen=None) -> bool:
+    """m3u8 播放列表守卫: 自取文本(2MB封顶), KEY/分片绝对地址逐条过 SSRF,
+    子 playlist 递归跟进(深度≤2, 防 master->rendition->内网key).
 
     相对分片继承播放列表主机(已守卫). 引擎只负责下载, 不替我们做安全决策.
     """
-    r, _, status = _fetch_guarded(sess, url, referer, "*/*")
+    if _seen is None:
+        _seen = set()
+    if depth < 0 or url in _seen or len(_seen) >= 6:
+        return depth >= 0 and url in _seen
+    _seen.add(url)
+    r, _, _ = _fetch_guarded(sess, url, referer, "*/*")
     if r is None:
         return False
     try:
-        text = r.text or ""
+        try:
+            cl = int((r.headers or {}).get("Content-Length") or 0)
+        except Exception:
+            cl = 0
+        if cl > _PL_MAX:
+            return False
+        buf = b""
+        for chunk in r.iter_content(65536):
+            buf += chunk
+            if len(buf) > _PL_MAX:
+                return False
+        text = buf.decode("utf-8", "ignore")
     except Exception:
-        text = ""
-    try:
-        r.close()
-    except Exception:
-        pass
-    if "#EXTM3U" not in text[:256].replace("\xef\xbb\xbf", ""):
+        return False
+    finally:
+        try:
+            r.close()
+        except Exception:
+            pass
+    head = text[:256].replace("﻿", "")
+    if "#EXTM3U" not in head and "#extm3u" not in head.lower():
         return False
     bad = 0
-    for m in re.findall(r'URI="([^"]+)"', text):
-        u = urljoin(url, m.strip())
+    for m in _PL_KEY_RE.finditer(text):
+        uri = (m.group(1) or m.group(2) or m.group(3) or "").strip()
+        if not uri:
+            continue
+        u = urljoin(url, uri)
         if re.match(r"^https?://", u):
             try:
                 h = urlsplit(u).hostname or ""
@@ -1454,12 +1688,20 @@ def _playlist_guard_ok(site, sess, url: str, referer: str) -> bool:
         line = line.strip()
         if not line or line.startswith("#"):
             continue
-        if re.match(r"^https?://", line):
+        if not re.match(r"^https?://", line):
+            continue
+        low = line.lower().split("?")[0]
+        if low.endswith(_PL_SEG_EXT):
             try:
                 h = urlsplit(line).hostname or ""
             except Exception:
                 h = ""
             if not h or not is_public_host(h):
+                bad += 1
+                if bad > 5:
+                    break
+        else:  # 疑似子 playlist: 递归跟进
+            if not _playlist_guard_ok(site, sess, line, referer, depth - 1, _seen):
                 bad += 1
                 if bad > 5:
                     break
@@ -1778,7 +2020,7 @@ def cmd_check(site) -> int:
     site.log("TARGET=%s MODE=check v%s" % (site.url, __version__))
     if preflight(site) == 2:
         return 2
-    p, _ = eff_proxy(site)
+    p, _ = eff_proxy(site, "browser")
     pw, browser, ctx, page = None, None, None, None
     try:
         pw, browser, ctx, page = open_ctx(site, True, p)
@@ -1802,7 +2044,7 @@ def cmd_wait(site, timeout: int = 300) -> int:
     site.log("TARGET=%s MODE=wait v%s" % (site.url, __version__))
     if preflight(site) == 2:
         return 2
-    p, _ = eff_proxy(site)
+    p, _ = eff_proxy(site, "browser")
     pw, browser, ctx, page = open_ctx(site, False, p)
     try:
         if _goto(page, site, site.url):
@@ -1855,13 +2097,20 @@ def cmd_dl(site, batch: int = 60) -> int:
                 return 3
         except Exception:
             pass
+    try:
+        fresh, age_h = session_fresh(site)
+        if not fresh and age_h >= 0:
+            site.log("会话已%0.1fh(超TTL), 建议重跑 wait 刷新. 继续用旧会话." % age_h)
+            site.bump("session-stale")
+    except Exception:
+        pass
     sess, kind = make_session(site)
     site.log("下载层: " + kind)
     try:
         site.ensure_robots(sess)
     except Exception:
         pass
-    p, _ = eff_proxy(site)
+    p, _ = eff_proxy(site, "browser")
     pw, browser, ctx, page = None, None, None, None
     try:
         pw, browser, ctx, page = open_ctx(site, True, p)
@@ -1935,7 +2184,7 @@ def cmd_diag(site) -> int:
     site.log("TARGET=%s MODE=diag v%s" % (site.url, __version__))
     if preflight(site) == 2:
         return 2
-    p, _ = eff_proxy(site)
+    p, _ = eff_proxy(site, "browser")
     pw, browser, ctx, page = None, None, None, None
     try:
         pw, browser, ctx, page = open_ctx(site, True, p)
@@ -1966,7 +2215,7 @@ def cmd_nav(site) -> int:
     site.log("TARGET=%s MODE=nav v%s" % (site.url, __version__))
     if preflight(site) == 2:
         return 2
-    p, _ = eff_proxy(site)
+    p, _ = eff_proxy(site, "browser")
     pw, browser, ctx, page = None, None, None, None
     try:
         pw, browser, ctx, page = open_ctx(site, True, p)
@@ -2113,6 +2362,20 @@ def cmd_envcheck(site=None) -> int:
         rep("camoufox(C++指纹)", True, "可选后端 --browser camoufox")
     except Exception:
         rep("camoufox(C++指纹)", False, "pip install camoufox && python -m camoufox fetch")
+    drift = [x for x in verify_lock() if "≠" in x[2] or x[2] in ("未安装", "缺失", "不可用")]
+    rep("版本锁定", not drift,
+        "与requirements.lock一致" if not drift else "漂移:%s" % ",".join(
+            "%s(%s->%s)" % (a, b, c) for a, b, c in drift))
+    st = tls_selftest()
+    if st:
+        cur = _pick_impersonate("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                "Chrome/136.0.0.0 Safari/537.36")
+        rep("tls-presets", bool(st.get(cur)),
+            "%d/%d可用, 当前%s" % (sum(1 for v in st.values() if v),
+                                   len(st), cur if st.get(cur) else cur + "缺失"))
+    else:
+        rep("tls-presets", False, "curl_cffi 缺失")
     try:
         free_gb = shutil.disk_usage(os.getcwd()).free / (1 << 30)
         disk_note = "剩余%.1fGB" % free_gb

@@ -262,7 +262,7 @@ def cmd_watch(site, batch: int = 10, dl_jobs: int = 3) -> int:
         site.ensure_robots(sess)
     except Exception:
         pass
-    p, _ = C.eff_proxy(site)
+    p, _ = C.eff_proxy(site, "browser")
     pw, browser, ctx, page = None, None, None, None
     try:
         pw, browser, ctx, page = C.open_ctx(site, True, p)

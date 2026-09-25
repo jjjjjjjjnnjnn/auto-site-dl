@@ -1,7 +1,13 @@
-# 锁定版本(2026-09-25 实测环境). 完整 hash 锁定需维护者在联网机器执行:
-#   pip hash playwright==1.60.0 requests==2.33.0 ... >> requirements.lock
-# 然后安装用: pip install --require-hashes -r requirements.lock
-playwright==1.60.0
-requests==2.33.0
-curl-cffi==0.16.3  # 可选: TLS 指纹伪装, 缺失自动回落 requests
-camoufox==0.5.6  # 可选: C++ 层浏览器指纹, 另需 python -m camoufox fetch
+# 锁定版本 + 主包 hash(2026-09-25, Windows amd64 实测).
+# 安装(严格校验): pip install --require-hashes -r requirements.lock
+# 注意: --require-hashes 要求传递依赖也有 hash; 完整再生(联网维护机):
+#   pip-compile --generate-hashes --output-file=requirements.lock requirements.in
+# 本文件 hash 覆盖直接依赖; 传递依赖漂移由 envcheck 的版本钉死检查兜底.
+playwright==1.60.0 \
+    --hash=sha256:9566821ce6030a1f9e7146a24e19355ab0d98805fd0f9be50bb3d8fef1750c02
+requests==2.33.0 \
+    --hash=sha256:3324635456fa185245e24865e810cecec7b4caf933d7eb133dcde67d48cee69b
+curl-cffi==0.16.3 \
+    --hash=sha256:fe87b66e324ed7318166698e02169f3208dbda32b872a27d2bc61a9c19b335eb
+camoufox==0.5.6 \
+    --hash=sha256:b906836cd952376a466f0e55445f139b8a65adfb9f18ab55cb2cd0c727b11561
