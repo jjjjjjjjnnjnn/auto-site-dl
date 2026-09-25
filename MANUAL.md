@@ -1,6 +1,6 @@
 # 操作手册（MANUAL）
 
-对应版本：v1.9.0 ｜ 适用系统：Windows 10/11（PowerShell）｜ Python ≥ 3.9
+对应版本：v1.9.1 ｜ 适用系统：Windows 10/11（PowerShell）｜ Python ≥ 3.9
 
 ---
 
@@ -249,7 +249,7 @@ python -u -X utf8 site_crawler.py dl https://example.com/ 60 --allow-cdn --no-vi
 ## 7. 日常维护
 
 ```powershell
-python -u -X utf8 tests\test_security.py   # 回归：374 项全过 exit 0（改代码必跑）
+python -u -X utf8 tests\test_security.py   # 回归：380 项全过 exit 0（改代码必跑）
 python -X utf8 -m py_compile site_crawler.py watchflow.py tui.py i18n.py
 python -u -X utf8 site_crawler.py envcheck
 python -u -X utf8 site_crawler.py verify https://example.com/   # 离线自证下载物
@@ -456,8 +456,10 @@ python -u -X utf8 site_crawler.py updatecheck
 - 覆盖：TUI 全量双语（含危险区 YES 确认）；引擎日志暂中文（增量中）；`--lang` 已直通引擎，TUI 有"语言"开关（auto→zh→en 循环）
 - 用法：`python -u -X utf8 tui.py --lang en`；`site_crawler.py … --lang en`
 
-- 回归闸门：`tests/test_security.py` 374 项（[X]学习限制与i18n 23，含 TUI 真调用 6：行模式 3 + 方向键 3）
+- 回归闸门：`tests/test_security.py` 380 项（[X]学习限制与i18n 23 + [Y]会话交接 6）
 
 > v1.8.1 热修：`tui.py pick()` 的 `for i, (label, _)` 把 i18n 函数 `_` 遮蔽成字符串，TUI 启动即 `TypeError`。修为 `val`，教训——冒烟只验了键集合相等、没真调一次 `pick`；现回归用 mock input 喂 `1`/`q` 真调，`_` 再被遮蔽当场被抓。
 >
 > v1.9.0 方向键 TUI：终端下 `pick()` 改走 `msvcrt.getch()`（Windows）/`termios`（POSIX）方向键菜单，首尾循环、记住各页光标；`AUTO_SITE_DL_LINE=1` 或管道时回数字行模式。文本输入（代理/栏目/YES 门）仍走 `input()`。
+>
+> v1.9.1 会话交接（修真站 `wait→dl` 必现 REVERIFY）：此前 `wait` 存的 `cookies.txt` 两边都没人用——`open_ctx` 全分支开全新匿名上下文、`make_session` 也不读会话，`dl` 首个页面即撞滑块验证退出 4。现 `_load_cookie_pairs` 解析（夹紧：名须 RFC6265 token、值禁 CTL/分号逗号、名/值/总数封顶、同名取末）→ `_seed_ctx_cookies` 经 `add_cookies` 喂浏览器（open_ctx 四分支：camoufox/clone/plain/_boot_plain，失败静默匿名继续）+ `make_session` 置 `Cookie` 头。值与名永不落日志，只记对数与域名。`check`/`watch` 同受益（`watch` 经 `watchflow.C.open_ctx`）。注意：会话有时效（TTL），过期仍需重跑 `wait`；换浏览器通道后首次也建议重跑一次 `wait`。

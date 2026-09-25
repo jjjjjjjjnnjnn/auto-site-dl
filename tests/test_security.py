@@ -1269,6 +1269,45 @@ atk("ver-cmp", C._ver_cmp("v1.10.0", "1.9.9") == 1
     and C._ver_cmp("1.7.0", "1.7.0") == 0
     and C._ver_cmp("1.6", "1.7.0") == -1)
 
+print("[Y] wait->dl 会话交接")
+with open(os.path.join(sX.root, "cookies.txt"), "w", encoding="utf-8") as _f:
+    _f.write("sess=abc123; theme=dark")
+atk("ck-parse", C._load_cookie_pairs(sX) == [("sess", "abc123"),
+                                             ("theme", "dark")])
+with open(os.path.join(sX.root, "cookies.txt"), "w", encoding="utf-8") as _f:
+    _f.write("good=a; bad name=b; inject=x\r\ny: 1; noval; multi=a=b=c; "
+             "ctl=\x01; comma=a,b; toolong=" + "v" * 5000 + "; dup=1; dup=2")
+_ckd = dict(C._load_cookie_pairs(sX))
+atk("ck-clamp", _ckd.get("good") == "a" and "bad name" not in _ckd
+    and "inject" not in _ckd and _ckd.get("multi") == "a=b=c"
+    and "ctl" not in _ckd and "comma" not in _ckd and "toolong" not in _ckd
+    and _ckd.get("dup") == "2")
+atk("ck-missing", C._load_cookie_pairs(
+    C.Site("https://no-such.invalid/", NS())) == [])
+
+
+class _FakeCtx:
+    def __init__(self):
+        self.added = None
+
+    def add_cookies(self, cs):
+        self.added = cs
+
+
+with open(os.path.join(sX.root, "cookies.txt"), "w", encoding="utf-8") as _f:
+    _f.write("sess=abc123")
+_fc = _FakeCtx()
+atk("ck-seed", C._seed_ctx_cookies(sX, _fc) is True
+    and _fc.added == [{"name": "sess", "value": "abc123",
+                       "domain": sX.host, "path": "/"}])
+atk("ck-seed-none", C._seed_ctx_cookies(sX, None) is False)
+_sess, _kind = C.make_session(sX)
+atk("ck-sess", (_sess.headers.get("Cookie") or "") == "sess=abc123")
+try:
+    _sess.close()
+except Exception:
+    pass
+
 print("\nREDTEAM: %d 项全部守住" % N)
 for x in (s, s2, s2h, s2v, s2i, s6, s7, s7b, s8, s_col, s_ns, s9, _sg,
           sA, sB, sC, sD, sD2, sE, sF, sF2, sG, sH, sT, sT2,

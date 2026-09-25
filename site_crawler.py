@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 jjjjjjjjnnjnn
-"""通用站点媒体下载器 v1.9.0: 填网址 -> 检测人机验证 -> 需验证弹窗等人工 -> 自动全站下载.
+"""通用站点媒体下载器 v1.9.1: 填网址 -> 检测人机验证 -> 需验证弹窗等人工 -> 自动全站下载.
 
 用法 (python -u -X utf8 site_crawler.py ...):
   check <url>              只检测: 该站是否需要人机验证 (不下载, 不存页面内容)
@@ -87,7 +87,7 @@ from urllib import robotparser
 
 import requests
 
-__version__ = "1.9.0"
+__version__ = "1.9.1"
 
 # ---------------------------------------------------------------- 身份池
 UA_POOL = [
@@ -1391,6 +1391,85 @@ def _tls_kind_for(site) -> str:
     return "curl_cffi"
 
 
+# ================================================================ 会话交接(wait->dl/check/watch)
+_CK_NAME_RE = re.compile(r"^[A-Za-z0-9!#$%&'*+\-.^_`|~]+$")
+_CK_MAX_PAIRS = 100
+_CK_MAX_VAL = 4096
+
+
+def _load_cookie_pairs(site):
+    """读 wait 存的 cookies.txt -> [(name, value)]. 纯本地解析, 失败回 [].
+
+    夹紧(防 cookies.txt 被投毒后走私进请求头):
+    名必须 RFC6265 token(拦 CRLF/空白/分隔符, 堵 header 注入);
+    值去首尾空白, 含 CTL/分号/逗号丢弃(cookie-octet 本就不含它们);
+    值允许首个 = 之后再出现 =(base64 常见); 名长/值长/总对数封顶;
+    同名取最后一次(与浏览器语义一致). 值永不打进日志.
+    """
+    try:
+        with open(site.ckf, encoding="utf-8") as f:
+            raw = f.read(65536)
+    except Exception:
+        return []
+    pairs = []
+    try:
+        for seg in (raw or "").split(";"):
+            if "=" not in seg:
+                continue
+            name, _, val = seg.partition("=")
+            name = name.strip()
+            val = val.strip()
+            if not name or len(name) > 256 or not _CK_NAME_RE.match(name):
+                continue
+            if not val or len(val) > _CK_MAX_VAL:
+                continue
+            if any(ord(c) < 0x20 or ord(c) == 0x7f for c in val):
+                continue
+            if ";" in val or "," in val:
+                continue
+            pairs.append((name, val))
+            if len(pairs) >= _CK_MAX_PAIRS:
+                break
+    except Exception:
+        return []
+    seen = {}
+    for k, v in pairs:
+        seen[k] = v
+    return list(seen.items())
+
+
+def _seed_ctx_cookies(site, ctx):
+    """把 wait 会话喂给浏览器上下文. 成功 True; 无会话/失败 False(匿名继续).
+
+    值与名永不落日志, 只记对数. 供 open_ctx 全分支调用
+    (dl/check/watch 共用, watchflow 经 C.open_ctx 自动受益).
+    """
+    if ctx is None:
+        return False
+    try:
+        pairs = _load_cookie_pairs(site)
+    except Exception:
+        return False
+    if not pairs:
+        return False
+    try:
+        host = site.host
+    except Exception:
+        return False
+    if not host:
+        return False
+    try:
+        ctx.add_cookies([{"name": k, "value": v, "domain": host, "path": "/"}
+                         for k, v in pairs])
+    except Exception:
+        return False
+    try:
+        site.log("会话已注入浏览器(%d 对, 域名 %s)" % (len(pairs), host))
+    except Exception:
+        pass
+    return True
+
+
 def make_session(site):
     """下载会话: curl_cffi(chrome指纹)优先, 自检失败回落requests(每进程只警告一次).
 
@@ -1465,6 +1544,12 @@ def make_session(site):
         s.trust_env = False
     except Exception as e:
         site.log("WARNING trust_env 设置失败(环境变量可能旁路代理): %s" % str(e)[:80])
+    try:  # wait->dl 会话交接: cookies.txt -> Cookie 头(值永不落日志, 解析夹紧防投毒)
+        _ck = _load_cookie_pairs(site)
+        if _ck:
+            s.headers.update({"Cookie": "; ".join("%s=%s" % kv for kv in _ck)})
+    except Exception:
+        pass
     try:
         s.timeout = 30
     except Exception:
@@ -1520,6 +1605,10 @@ def _open_ctx_camoufox(site, headless: bool, proxy: str):
     ctx = cm.__enter__()
     ctx._camoufox_cm = cm
     site._camoufox_cm = cm
+    try:
+        _seed_ctx_cookies(site, ctx)
+    except Exception:
+        pass
     return None, None, ctx, ctx.new_page()
 
 
@@ -1557,6 +1646,10 @@ def open_ctx(site, headless: bool = True, proxy: str = ""):
             user_agent=site.UA, viewport=site.viewport, locale=loc,
             timezone_id=tz, ignore_https_errors=insecure)
         ctx.add_init_script(STEALTH_JS)
+        try:
+            _seed_ctx_cookies(site, ctx)
+        except Exception:
+            pass
         return pw, browser, ctx, ctx.new_page()
 
     try:
@@ -1568,12 +1661,20 @@ def open_ctx(site, headless: bool = True, proxy: str = ""):
                 timezone_id=tz, ignore_https_errors=insecure,
                 proxy=launch_kw.get("proxy"))
             ctx.add_init_script(STEALTH_JS)
+            try:
+                _seed_ctx_cookies(site, ctx)
+            except Exception:
+                pass
             return pw, None, ctx, ctx.new_page()
         browser = pw.chromium.launch(**launch_kw)
         ctx = browser.new_context(
             user_agent=site.UA, viewport=site.viewport, locale=loc,
             timezone_id=tz, ignore_https_errors=insecure)
         ctx.add_init_script(STEALTH_JS)
+        try:
+            _seed_ctx_cookies(site, ctx)
+        except Exception:
+            pass
         return pw, browser, ctx, ctx.new_page()
     except Exception as e:
         if ch in ("chrome", "edge") or site.want_clone():
