@@ -1,6 +1,6 @@
 # 操作手册（MANUAL）
 
-对应版本：v1.9.6 ｜ 适用系统：Windows 10/11（PowerShell）｜ Python ≥ 3.9
+对应版本：v1.9.7 ｜ 适用系统：Windows 10/11（PowerShell）｜ Python ≥ 3.9
 
 ---
 
@@ -271,7 +271,7 @@ python -u -X utf8 site_crawler.py dl https://example.com/ 60 --allow-cdn --no-vi
 ## 7. 日常维护
 
 ```powershell
-python -u -X utf8 tests\test_security.py   # 回归：406 项全过 exit 0（改代码必跑）
+python -u -X utf8 tests\test_security.py   # 回归：411 项全过 exit 0（改代码必跑）
 python -X utf8 -m py_compile site_crawler.py watchflow.py tui.py i18n.py
 python -u -X utf8 site_crawler.py envcheck
 python -u -X utf8 site_crawler.py verify https://example.com/   # 离线自证下载物
@@ -478,7 +478,7 @@ python -u -X utf8 site_crawler.py updatecheck
 - 覆盖：TUI 全量双语（含危险区 YES 确认）；引擎日志暂中文（增量中）；`--lang` 已直通引擎，TUI 有"语言"开关（auto→zh→en 循环）
 - 用法：`python -u -X utf8 tui.py --lang en`；`site_crawler.py … --lang en`
 
-- 回归闸门：`tests/test_security.py` 406 项（[X]23 + [Y]19 + [Z]7 + [AA]3 + [AB]深挖回退 3）
+- 回归闸门：`tests/test_security.py` 411 项（[X]23 + [Y]19 + [Z]7 + [AA]3 + [AB]3 + [AC]自动驾驶 5）
 
 > v1.8.1 热修：`tui.py pick()` 的 `for i, (label, _)` 把 i18n 函数 `_` 遮蔽成字符串，TUI 启动即 `TypeError`。修为 `val`，教训——冒烟只验了键集合相等、没真调一次 `pick`；现回归用 mock input 喂 `1`/`q` 真调，`_` 再被遮蔽当场被抓。
 >
@@ -495,3 +495,5 @@ python -u -X utf8 site_crawler.py updatecheck
 > v1.9.5 diag 只读快照（定位"会话有效但 0 媒体 0 锚点"的空跑）：实战出现 wait 已验证、dl 注入 21 对、页进了但收割全空。`_diag_snapshot` 只读取数——标题（去注行截断）/终址（脱敏到 path）/正文体量（只记字节数）/原始计数（img/vid/src/a 个数）/验证态/沉降增量，`[AA]` 锁定脱敏与永不抛错。判读：raw 全 0=空壳页（精简/未渲染/SPA 未挂载）；raw 有数但媒体 0=全被过滤（重点查 `blob:`——MSE 播流的 video 标签 src 就是 blob，正被 `norm_media` 丢弃，及 `is_media_url` 后缀门）；raw 缺失=JS 执行层问题。下一步候选（待 diag 定夺）：blob/流式收割增强，或 wait 暖机的上下文复用（persistent profile）。
 >
 > v1.9.6 详情回退（修门户页空跑）：`diag` 实锤——门户页 344 链 0 媒体（287KB 索引页，视频全在详情链后），而 `deep_dive` 关键词门（detail|play|/vod/|/video/|watch|/p/）零命中即静默跳过全部 297 锚点。现两轮：关键词优先；零命中回退试探**同站**前 2 个（防漫游站外，同样走 `_browser_guard`/验证/预算，记 `dive_fallback` 并打一行日志）。同站用主机全等判定；非字符串锚点不再抛错（旧代码 `re.search` 遇非标输入可崩整轮）。另 `net_cap` 末页余量记 `net_remain` + WARNING（行为不变，只不再无声丢弃）。`[AB]` 锁定：回退只进同站（站外锚点不碰）、关键词存在时不回退、详情页撞验证即停并上报。注意：回退每页至多 2 个、全局预算 20，先看它能不能咬住详情链；若详情页本身是 JS 播放器（流地址只在网络层出现），下一步给 `deep_dive` 加网络捕获排空或转 `watch` 模式。
+>
+> v1.9.7 auto 自动驾驶（用户只给网址+做验证+拿内容，配置程序内部办）：实战 `ERR_NETWORK_ACCESS_DENIED`（本机出口被拦，直连 TLS 与导航同失败）导致 `auto` 首败即退。现 check 梯子至多 3 次有界重试——第 2 次换身份束 + 退避 5s（瞬时风控），第 3 次换浏览器通道 + 退避 10s（真 Chrome 可能自带代理配置；缺失通道由 `open_ctx` 原有回退接住），通道覆盖经 `site._auto_channel` 生效、用后清零，顺序由 `_eff_channel` 收敛。锁被其他活进程占用直接不重试。三振后：配了快照/文本代理则 `_snapshot_intel` 只读兜底（不改变失败结论），再打 verdict（配 `--proxy` 后重跑）并返回原码。退出码语义不变（2=基础设施失败），`[AC]` 锁定重试次数/兜底调用/覆盖清零/活锁跳过/通道顺序。注意：硬出口封锁重试救不了，verdict 会明说配代理；`wait` 仍是人机交互，不自动。

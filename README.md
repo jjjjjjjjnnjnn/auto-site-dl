@@ -76,7 +76,7 @@ auto-site-dl/
 ├── watchflow.py          视频深层流程（取流状态机 + 并行下载池）
 ├── tui.py                终端交互 UI（中英双语）
 ├── i18n.py               语言探测与译表（纯标准库）
-├── tests/test_security.py 安全回归（红队自审，406 项，纯本地零网络）
+├── tests/test_security.py 安全回归（红队自审，411 项，纯本地零网络）
 ├── requirements.txt
 ├── MANUAL.md             操作手册
 ├── LICENSE               Apache-2.0
@@ -115,11 +115,12 @@ auto-site-dl/
 - **随机默认 v1.9.4**：UA 池 6→12（Chrome 131–150 + Edge 144 + Firefox，各对齐 TLS preset 无超前警告）+ `think()` ±25% 抖动；已有随机（视口/run_id/代理轮换/延迟高斯抖动/鼠标拟人）保持；安全基座默认锁定（cdn/http/明文/spoof/快照/锁/劫持全关）并 en 回归钉死
 - **diag 只读快照 v1.9.5**：`diag` 新增标题/终址/正文体量/原始计数(img/vid/src/a)/验证态/沉降增量，定位空跑（raw 全 0=空壳页、有数但媒体 0=被过滤、raw 缺失=JS 执行层问题），全脱敏零正文落盘
 - **详情回退 v1.9.6**：门户页（有链无媒体）`deep_dive` 关键词零命中时试探同站前 2 锚点（同站约束防漫游，走守卫/验证/预算，记 `dive_fallback`）；末页网络捕获余量记 `net_remain` 不再无声丢弃；非标锚点不再抛错
+- **auto 自动驾驶 v1.9.7**：`auto` 不再首败即退——check 梯子至多 3 次（1 照常；2 换身份束+退避；3 换浏览器通道，真 Chrome 可能自带代理配置），锁被活进程占则不重试；三振后配了快照/文本代理则只读情报兜底，再打处置 verdict；`_snapshot_intel` 抽取复用，`_eff_channel` 通道顺序可测
 
 ## 维护
 
 ```powershell
-python -u -X utf8 tests\test_security.py   # 回归闸门：406 项全过，exit 0
+python -u -X utf8 tests\test_security.py   # 回归闸门：411 项全过，exit 0
 python -X utf8 -m py_compile site_crawler.py watchflow.py tui.py i18n.py
 python -u -X utf8 site_crawler.py envcheck
 ```

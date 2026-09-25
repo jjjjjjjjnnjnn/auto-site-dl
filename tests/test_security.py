@@ -1536,12 +1536,63 @@ with _mock.patch.object(C, "_browser_guard", return_value=True), \
                               ["https://h/watch/9"], [0], _bud3)
     atk("dive-verify", _got3 == [] and _rv3 is True and _bud3 == [19])
 
+print("[AC] auto 自动驾驶")
+
+
+def _ACMocks(**kw):
+    kw.setdefault("save_learn", lambda *a: None)
+    kw.setdefault("sleep", lambda *a: None)
+    return [_mock.patch.object(C, "save_learn", kw["save_learn"]),
+            _mock.patch("time.sleep", kw["sleep"])]
+
+
+with _mock.patch.object(C, "cmd_check", side_effect=[2, 2, 0]) as _mC, \
+        _mock.patch.object(C, "cmd_dl", return_value=0) as _mD, \
+        _ACMocks()[0], _ACMocks()[1]:
+    _sAC = C.Site("https://auto1.invalid/", NS())
+    _rc = C.cmd_auto(_sAC, 60)
+    atk("auto-retry-ok", _rc == 0 and _mC.call_count == 3
+        and _mD.call_count == 1 and _sAC._auto_channel == "")
+with _mock.patch.object(C, "cmd_check", return_value=2) as _mC2, \
+        _mock.patch.object(C, "cmd_dl", return_value=0) as _mD2, \
+        _mock.patch.object(C, "_snapshot_intel") as _mI, \
+        _ACMocks()[0], _ACMocks()[1]:
+    _sAC2 = C.Site("https://auto2.invalid/", NS(snapshot="wayback"))
+    _rc2 = C.cmd_auto(_sAC2, 60)
+    atk("auto-exhausted", _rc2 == 2 and _mC2.call_count == 3
+        and _mD2.call_count == 0 and _mI.call_count == 1)
+with _mock.patch.object(C, "cmd_check", return_value=0) as _mC3, \
+        _mock.patch.object(C, "cmd_dl", return_value=0), \
+        _ACMocks()[0], _ACMocks()[1]:
+    _sAC3 = C.Site("https://auto3.invalid/", NS())
+    atk("auto-once", C.cmd_auto(_sAC3, 60) == 0 and _mC3.call_count == 1
+        and _sAC3._auto_channel == "")
+with _mock.patch.object(C, "cmd_check", return_value=2) as _mC4, \
+        _mock.patch.object(C, "cmd_dl", return_value=0), \
+        _mock.patch.object(C, "_pid_alive", return_value=True), \
+        _ACMocks()[0], _ACMocks()[1]:
+    _sAC4 = C.Site("https://auto4.invalid/", NS())
+    with open(os.path.join(_sAC4.root, ".session.lock"), "w",
+              encoding="utf-8") as _f:
+        _f.write("99999999")
+    atk("auto-lockskip", C.cmd_auto(_sAC4, 60) == 2 and _mC4.call_count == 1)
+    try:
+        os.remove(os.path.join(_sAC4.root, ".session.lock"))
+    except OSError:
+        pass
+_sAC5 = C.Site("https://auto5.invalid/", NS(browser="chrome"))
+_sAC5._auto_channel = "camoufox"
+_sAC6 = C.Site("https://auto6.invalid/", NS())
+atk("auto-channel", C._eff_channel(_sAC5) == "camoufox"
+    and C._eff_channel(_sAC6) == "")
+
 print("\nREDTEAM: %d 项全部守住" % N)
 for x in (s, s2, s2h, s2v, s2i, s6, s7, s7b, s8, s_col, s_ns, s9, _sg,
           sA, sB, sC, sD, sD2, sE, sF, sF2, sG, sH, sT, sT2,
           sK0, sK1, sK2, sK3, sL0, sL1, sL2, sL3, sL4, sL5, sL6, sL7,
           sM0, sM1, sM2, sM3, sN0, sN1, sP, sP2, sQ, sQ2,
-          sL, sYv, sYv2, _sR1, _sR2):
+          sL, sYv, sYv2, _sR1, _sR2,
+          _sAC, _sAC2, _sAC3, _sAC4, _sAC5, _sAC6):
     try:
         shutil.rmtree(x.root, ignore_errors=True)
     except Exception:

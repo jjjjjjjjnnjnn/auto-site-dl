@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 jjjjjjjjnnjnn
-"""通用站点媒体下载器 v1.9.6: 填网址 -> 检测人机验证 -> 需验证弹窗等人工 -> 自动全站下载.
+"""通用站点媒体下载器 v1.9.7: 填网址 -> 检测人机验证 -> 需验证弹窗等人工 -> 自动全站下载.
 
 用法 (python -u -X utf8 site_crawler.py ...):
   check <url>              只检测: 该站是否需要人机验证 (不下载, 不存页面内容)
@@ -87,7 +87,7 @@ from urllib import robotparser
 
 import requests
 
-__version__ = "1.9.6"
+__version__ = "1.9.7"
 
 # ---------------------------------------------------------------- 身份池
 UA_POOL = [
@@ -880,6 +880,7 @@ class Site:
         self._alive_cache = {}  # 代理存活缓存 {proxy: (ts, bool)}
         self._camoufox_cm = None
         self._robots = None
+        self._auto_channel = ""  # auto 重试梯子的通道覆盖(平时空=不干预)
         self.pick_identity()
 
     # -- 身份 --
@@ -1697,6 +1698,37 @@ def _open_ctx_camoufox(site, headless: bool, proxy: str):
     return None, None, ctx, ctx.new_page()
 
 
+def _eff_channel(site) -> str:
+    """浏览器通道生效顺序: auto 重试覆盖 > 命令行 > 站点配置 > 默认."""
+    try:
+        o = (getattr(site, "_auto_channel", "") or "").strip().lower()
+        if o:
+            return o
+    except Exception:
+        pass
+    try:
+        return (_cfg_str(getattr(site.args, "browser", ""))
+                or _cfg_str(site.cfg.get("browser", "")) or "").lower()
+    except Exception:
+        return ""
+
+
+def _lock_held_by_other(site) -> bool:
+    """会话锁是否被其他活进程持有(是则 auto 不重试, 重试也注定失败)."""
+    try:
+        with open(os.path.join(site.root, ".session.lock"),
+                  encoding="utf-8") as f:
+            holder = int((f.read() or "").strip().split()[0])
+    except Exception:
+        return False
+    if holder == os.getpid():
+        return False
+    try:
+        return bool(_pid_alive(holder))
+    except Exception:
+        return False
+
+
 def open_ctx(site, headless: bool = True, proxy: str = ""):
     """打开浏览器上下文. 返回 (pw, browser, ctx, page); camoufox 通道 pw/browser 为 None.
 
@@ -1706,8 +1738,7 @@ def open_ctx(site, headless: bool = True, proxy: str = ""):
     from playwright.sync_api import sync_playwright
     pw = sync_playwright().start()
     loc, tz = _locale_of(site)
-    ch = (_cfg_str(getattr(site.args, "browser", ""))
-          or _cfg_str(site.cfg.get("browser", "")) or "").lower()
+    ch = _eff_channel(site)
     if ch == "camoufox":
         try:
             return _open_ctx_camoufox(site, headless, proxy)
@@ -3750,6 +3781,29 @@ def _goto(page, site, url: str):
         return hint
 
 
+def _snapshot_intel(site, tail: str = "原站仍走 wait 验证") -> None:
+    """路径二/四只读情报: 快照+文本代理探测, 只打日志不改变调用方结论. 永不抛错."""
+    try:
+        if not (site.snapshot_mode() or site.text_proxy_base()):
+            return
+        _ss, _ = make_session(site)
+        if site.snapshot_mode():
+            _ok, _src, _sz = fetch_snapshot(site, _ss, site.url)
+            if _ok:
+                site.log("快照可用(%s, 正文约%dKB): 仅情报参考, "
+                         "%s" % (_src, _sz // 1024, tail))
+            else:
+                site.log("快照无可用存档")
+        _tok, _tlen = fetch_text_proxy(site, _ss, site.url)
+        if _tok:
+            site.log("文本代理可用(正文约%dKB): 仅情报参考, "
+                     "%s" % (_tlen // 1024, tail))
+        elif site.text_proxy_base():
+            site.log("文本代理无可用内容")
+    except Exception:
+        pass
+
+
 def cmd_check(site) -> int:
     site.log("TARGET=%s MODE=check v%s" % (site.url, __version__))
     if preflight(site) == 2:
@@ -3764,24 +3818,7 @@ def cmd_check(site) -> int:
         if nv:
             site.log("CHECK %s -> VERIFY-NEEDED 需人工验证 (selector:%s)"
                      % (site.url, why))
-            try:  # 路径二/四: 快照+文本代理情报(只读探测, 不改变"需验证"结论)
-                if site.snapshot_mode() or site.text_proxy_base():
-                    _ss, _ = make_session(site)
-                    if site.snapshot_mode():
-                        _ok, _src, _sz = fetch_snapshot(site, _ss, site.url)
-                        if _ok:
-                            site.log("快照可用(%s, 正文约%dKB): 仅情报参考, "
-                                     "原站仍走 wait 验证" % (_src, _sz // 1024))
-                        else:
-                            site.log("快照无可用存档")
-                    _tok, _tlen = fetch_text_proxy(site, _ss, site.url)
-                    if _tok:
-                        site.log("文本代理可用(正文约%dKB): 仅情报参考, "
-                                 "原站仍走 wait 验证" % (_tlen // 1024))
-                    elif site.text_proxy_base():
-                        site.log("文本代理无可用内容")
-            except Exception:
-                pass
+            _snapshot_intel(site)  # 路径二/四: 快照+文本代理情报(只读探测, 不改变"需验证"结论)
             return 10
         site.log("CHECK %s -> OPEN 无验证, 可直接dl" % site.url)
         try:  # 路径三: 软墙情报(遮罩计数/正文规模, 不改变 OPEN 结论)
@@ -4002,13 +4039,69 @@ def cmd_dl(site, batch: int = 60, dl_jobs: int = 1) -> int:
     return 4 if stop_verify else 0
 
 
+AUTO_CHECK_TRIES = 3
+
+
 def cmd_auto(site, batch: int = 60) -> int:
-    rc = cmd_check(site)
+    """零配置自动驾驶: 用户只给网址+做人机验证+拿内容, 其余程序内部办.
+
+    check 梯子(至多 3 次, 有界不死磕): 1照常; 2换身份束+退避(瞬时风控);
+    3换浏览器通道(本机网络拦截常与通道代理配置有关, 真 Chrome 可能自带代理).
+    锁被其他活进程占用则不重试. 三振后: 配了快照/文本代理则只读情报兜底
+    (不改变失败结论), 打处置 verdict 后返回原码. 成功仍走 wait/dl 老链.
+    """
+    site.log("TARGET=%s MODE=auto v%s" % (site.url, __version__))
+    rc = 2
+    for attempt in range(1, AUTO_CHECK_TRIES + 1):
+        if attempt == 2:
+            try:
+                site.pick_identity()
+                site.log("auto重试(%d/%d): 已换身份束" % (attempt, AUTO_CHECK_TRIES))
+            except Exception:
+                pass
+        if attempt == 3:
+            try:
+                cur = (_cfg_str(getattr(site.args, "browser", "")) or "").lower()
+                site._auto_channel = "chrome" if cur in ("", "chromium") else "chromium"
+                site.pick_identity()
+                site.log("auto重试(%d/%d): 换浏览器通道→%s"
+                         % (attempt, AUTO_CHECK_TRIES, site._auto_channel))
+            except Exception:
+                pass
+        rc = cmd_check(site)
+        if rc != 2:
+            break
+        if attempt < AUTO_CHECK_TRIES:
+            try:
+                if _lock_held_by_other(site):
+                    site.log("auto不重试: 会话锁被其他活进程占用, 等它做完再跑")
+                    break
+            except Exception:
+                pass
+            try:
+                time.sleep(5 * attempt)
+            except Exception:
+                pass
+    try:
+        site._auto_channel = ""
+    except Exception:
+        pass
     if rc == 10:
         rc = cmd_wait(site)
         if rc != 0:
             return rc
     elif rc != 0:
+        try:
+            if site.snapshot_mode() or site.text_proxy_base():
+                site.log("auto直连失败: 转快照/文本代理情报兜底(只读)")
+                _snapshot_intel(site, "原站直连失败")
+        except Exception:
+            pass
+        try:
+            site.log("auto终止: 本机直连失败(%d次). 请配 --proxy 代理后重跑, "
+                     "或检查目标URL/出口网络" % AUTO_CHECK_TRIES)
+        except Exception:
+            pass
         return rc
     rc = cmd_dl(site, batch)
     try:
