@@ -1396,6 +1396,76 @@ atk("viewport-sane", all(320 <= _v["width"] <= 2560
                          and 480 <= _v["height"] <= 1440
                          for _v in C.VIEWPORTS + C.MOBILE_VIEWPORTS))
 
+print("[AA] diag 只读快照")
+
+
+class _FakeDiagPage:
+    def __init__(self, title="T\nX", url="https://h/p/x?token=abc",
+                 html="<html>" + "v" * 100 + "</html>", raw=None, n0=5, n1=7):
+        self._title = title
+        self.url = url
+        self._html = html
+        self._raw = {"img": 3, "vid": 1, "src": 0, "a": 9} \
+            if raw is None else raw
+        self._n = [n0, n1]
+        self.mouse = self
+
+    def title(self):
+        return self._title
+
+    def content(self):
+        return self._html
+
+    def evaluate(self, js):
+        if "document.images.length" in js:
+            return dict(self._raw)
+        if "scrollTo" in js:
+            return None
+        return self._n.pop(0) if self._n else 0
+
+    def query_selector(self, sel):
+        return None
+
+    def wheel(self, x, y):
+        pass
+
+    def wait_for_timeout(self, ms):
+        pass
+
+
+_pg = _FakeDiagPage()
+_sn = C._diag_snapshot(_pg, sYv)
+atk("diag-snap", _sn["title"] == "T X" and _sn["final"] == "https://h/p/x"
+    and _sn["html_len"] == len("<html>" + "v" * 100 + "</html>")
+    and _sn["raw"] == {"img": 3, "vid": 1, "src": 0, "a": 9}
+    and _sn["verify"] == "" and _sn["grew"] == 2)
+_pg0 = _FakeDiagPage(raw={"img": 0, "vid": 0, "src": 0, "a": 0},
+                     n0=0, n1=0, html="<html></html>")
+_sn0 = C._diag_snapshot(_pg0, sYv)
+atk("diag-shell", _sn0["raw"] == {"img": 0, "vid": 0, "src": 0, "a": 0}
+    and _sn0["grew"] == 0)
+
+
+class _BoomPage:
+    url = "https://h/x"
+
+    def title(self):
+        raise RuntimeError("x")
+
+    def content(self):
+        raise RuntimeError("x")
+
+    def evaluate(self, js):
+        raise RuntimeError("x")
+
+    def query_selector(self, sel):
+        raise RuntimeError("x")
+
+
+_sn2 = C._diag_snapshot(_BoomPage(), sYv)
+atk("diag-boom", _sn2 == {"title": "", "final": "https://h/x",
+                          "html_len": -1, "raw": {}, "verify": "", "grew": 0})
+
 print("\nREDTEAM: %d 项全部守住" % N)
 for x in (s, s2, s2h, s2v, s2i, s6, s7, s7b, s8, s_col, s_ns, s9, _sg,
           sA, sB, sC, sD, sD2, sE, sF, sF2, sG, sH, sT, sT2,

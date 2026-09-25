@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 jjjjjjjjnnjnn
-"""通用站点媒体下载器 v1.9.4: 填网址 -> 检测人机验证 -> 需验证弹窗等人工 -> 自动全站下载.
+"""通用站点媒体下载器 v1.9.5: 填网址 -> 检测人机验证 -> 需验证弹窗等人工 -> 自动全站下载.
 
 用法 (python -u -X utf8 site_crawler.py ...):
   check <url>              只检测: 该站是否需要人机验证 (不下载, 不存页面内容)
@@ -87,7 +87,7 @@ from urllib import robotparser
 
 import requests
 
-__version__ = "1.9.4"
+__version__ = "1.9.5"
 
 # ---------------------------------------------------------------- 身份池
 UA_POOL = [
@@ -3558,6 +3558,48 @@ def fetch_m3u8(site, url: str, idx: int, referer: str, sess=None):
 
 
 # ================================================================ 页面收获
+def _diag_snapshot(page, site):
+    """diag 快照(只读零副作用): 标题/终址/正文体量/原始计数/验证态/沉降增量.
+
+    只取计数与长度, 不落任何 URL 全串/正文/cookie: 标题去注行截断,
+    终址经 url_for_log 脱敏到 path. 任何一步失败记默认值, 永不抛错.
+    判读: raw 全 0=空壳页(精简/未渲染); raw 有数但媒体 0=全被过滤
+    (blob:/data:/非媒体后缀); evaluate 整体失败 raw={} 即 JS 执行层问题.
+    """
+    snap = {"title": "", "final": "", "html_len": -1, "raw": {},
+            "verify": "", "grew": 0}
+    try:
+        snap["title"] = _clean_nav_text(page.title())
+    except Exception:
+        pass
+    try:
+        snap["final"] = url_for_log(page.url)
+    except Exception:
+        pass
+    try:
+        snap["html_len"] = len(page.content() or "")
+    except Exception:
+        pass
+    try:
+        snap["raw"] = page.evaluate(
+            "() => ({img: document.images.length, "
+            "vid: document.querySelectorAll('video').length, "
+            "src: document.querySelectorAll('source').length, "
+            "a: document.querySelectorAll('a[href]').length})") or {}
+    except Exception:
+        snap["raw"] = {}
+    try:
+        _nv, _why = detect_verify(page, site)
+        snap["verify"] = _why if _nv else ""
+    except Exception:
+        pass
+    try:
+        snap["grew"] = settle_lazy_load(page, site)
+    except Exception:
+        pass
+    return snap
+
+
 def harvest(page, site, base: str):
     """抓取页内媒体: 图片/video/source/a, 归一化+过滤+视频优先排序."""
     try:
@@ -3917,6 +3959,15 @@ def cmd_diag(site) -> int:
         pw, browser, ctx, page = open_ctx(site, True, p)
         if _goto(page, site, site.url):
             return 2
+        _snap = _diag_snapshot(page, site)
+        _raw = _snap.get("raw") or {}
+        site.log("DIAG 页: 标题[%s] 终址 %s 正文%dB 验证=%s 沉降+%d"
+                 % (_snap.get("title", ""), _snap.get("final", "?"),
+                    _snap.get("html_len", -1),
+                    _snap.get("verify") or "无", _snap.get("grew", 0)))
+        site.log("DIAG 原始: img=%s vid=%s src=%s a=%s"
+                 % (_raw.get("img", "?"), _raw.get("vid", "?"),
+                    _raw.get("src", "?"), _raw.get("a", "?")))
         media, anchors = harvest(page, site, site.url)
         hosts, sufs = defaultdict(int), defaultdict(int)
         for u in media:

@@ -1,6 +1,6 @@
 # 操作手册（MANUAL）
 
-对应版本：v1.9.4 ｜ 适用系统：Windows 10/11（PowerShell）｜ Python ≥ 3.9
+对应版本：v1.9.5 ｜ 适用系统：Windows 10/11（PowerShell）｜ Python ≥ 3.9
 
 ---
 
@@ -271,7 +271,7 @@ python -u -X utf8 site_crawler.py dl https://example.com/ 60 --allow-cdn --no-vi
 ## 7. 日常维护
 
 ```powershell
-python -u -X utf8 tests\test_security.py   # 回归：400 项全过 exit 0（改代码必跑）
+python -u -X utf8 tests\test_security.py   # 回归：403 项全过 exit 0（改代码必跑）
 python -X utf8 -m py_compile site_crawler.py watchflow.py tui.py i18n.py
 python -u -X utf8 site_crawler.py envcheck
 python -u -X utf8 site_crawler.py verify https://example.com/   # 离线自证下载物
@@ -478,7 +478,7 @@ python -u -X utf8 site_crawler.py updatecheck
 - 覆盖：TUI 全量双语（含危险区 YES 确认）；引擎日志暂中文（增量中）；`--lang` 已直通引擎，TUI 有"语言"开关（auto→zh→en 循环）
 - 用法：`python -u -X utf8 tui.py --lang en`；`site_crawler.py … --lang en`
 
-- 回归闸门：`tests/test_security.py` 400 项（[X]学习限制与i18n 23 + [Y]会话交接/空跑/锁/预设 19 + [Z]随机默认与安全基座 7）
+- 回归闸门：`tests/test_security.py` 403 项（[X]23 + [Y]19 + [Z]7 + [AA]diag 快照 3）
 
 > v1.8.1 热修：`tui.py pick()` 的 `for i, (label, _)` 把 i18n 函数 `_` 遮蔽成字符串，TUI 启动即 `TypeError`。修为 `val`，教训——冒烟只验了键集合相等、没真调一次 `pick`；现回归用 mock input 喂 `1`/`q` 真调，`_` 再被遮蔽当场被抓。
 >
@@ -491,3 +491,5 @@ python -u -X utf8 site_crawler.py updatecheck
 > v1.9.3 锁自愈 + 视频预设：`--lock-session` 的 `.session.lock` 从无释放逻辑，第一次运行后**每次**都 SESSION-LOCKED 退出 2（之前误报为"另一进程持有"，实为自己的残留）。现持有者是自己则重入放行、持有者已死则删锁重取（`_pid_alive`：Windows 用 OpenProcess，POSIX 用 kill 0，判不准按存活处理）、正常退出经 atexit 只删自己的锁；报错改给持有者 PID + 锁路径 + 处理指引。回归把 `sess-lock` 更新为新契约（同进程重入 True），另补 lock-take/self/release/stale/held/pid-self。同版：TUI `🎯 一键视频配置` + CLI `--preset video`（`apply_video_preset` 纯函数，收敛 cdn/视频优先开、spoof/快照/干预/http/明文/锁关，不动代理/栏目/浏览器/密钥等）；MANUAL §2.1/§2.2 新增拿视频推荐配置与输入项填写指南。测试侧另修两层竞态：NTFS 隧道化（删后速建继承 48h 前 mtime，`os.utime` 钉 now）与亚微秒时钟差（`getmtime` 比 `time.time()` 新约 0.24µs，`sess-fresh` 下界加 `-0.001` epsilon；引擎判定不受影响）。
 >
 > v1.9.4 随机默认（每次运行自动换身份，安全基座不动）：审计确认已随机项——UA、视口、`run_id` 身份束、代理轮换/粘滞、限速高斯抖动、鼠标拟人、重试抖动；本轮补两处——UA 池 6→12（Chrome 131/132/136/142/144/145/146/148/150 + Edge 130/144 + Firefox 133，逐条对齐 TLS preset，Chrome 大版本全 ≤150 无超前警告）与 `think()` ±25% 均匀抖动（下限 100ms，调用方传标称值即可）。刻意**不随机**：TLS 校验、http/明文、伪装、锁、劫持、浏览器通道（求稳，有缺失回退）、指纹（必须与 UA 同代绑定，错配即脚本信号）。`[Z]` 把安全默认钉死：解析器默认值全关断言 + 池卫生（Mozilla 前缀/版本封顶/数量下限）+ 全池指纹对齐 + think 上下界 + 随机流经全局 RNG（seed 可复现）+ 视口范围。
+>
+> v1.9.5 diag 只读快照（定位"会话有效但 0 媒体 0 锚点"的空跑）：实战出现 wait 已验证、dl 注入 21 对、页进了但收割全空。`_diag_snapshot` 只读取数——标题（去注行截断）/终址（脱敏到 path）/正文体量（只记字节数）/原始计数（img/vid/src/a 个数）/验证态/沉降增量，`[AA]` 锁定脱敏与永不抛错。判读：raw 全 0=空壳页（精简/未渲染/SPA 未挂载）；raw 有数但媒体 0=全被过滤（重点查 `blob:`——MSE 播流的 video 标签 src 就是 blob，正被 `norm_media` 丢弃，及 `is_media_url` 后缀门）；raw 缺失=JS 执行层问题。下一步候选（待 diag 定夺）：blob/流式收割增强，或 wait 暖机的上下文复用（persistent profile）。
