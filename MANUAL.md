@@ -1,6 +1,6 @@
 # 操作手册（MANUAL）
 
-对应版本：v1.9.8 ｜ 适用系统：Windows 10/11（PowerShell）｜ Python ≥ 3.9
+对应版本：v1.9.9 ｜ 适用系统：Windows 10/11（PowerShell）｜ Python ≥ 3.9
 
 ---
 
@@ -271,7 +271,7 @@ python -u -X utf8 site_crawler.py dl https://example.com/ 60 --allow-cdn --no-vi
 ## 7. 日常维护
 
 ```powershell
-python -u -X utf8 tests\test_security.py   # 回归：414 项全过 exit 0（改代码必跑）
+python -u -X utf8 tests\test_security.py   # 回归：417 项全过 exit 0（改代码必跑）
 python -X utf8 -m py_compile site_crawler.py watchflow.py tui.py i18n.py
 python -u -X utf8 site_crawler.py envcheck
 python -u -X utf8 site_crawler.py verify https://example.com/   # 离线自证下载物
@@ -478,7 +478,7 @@ python -u -X utf8 site_crawler.py updatecheck
 - 覆盖：TUI 全量双语（含危险区 YES 确认）；引擎日志暂中文（增量中）；`--lang` 已直通引擎，TUI 有"语言"开关（auto→zh→en 循环）
 - 用法：`python -u -X utf8 tui.py --lang en`；`site_crawler.py … --lang en`
 
-- 回归闸门：`tests/test_security.py` 414 项（[X]23 + [Y]19 + [Z]7 + [AA]3 + [AB]3 + [AC]5 + [AD]诚实梯子 3）
+- 回归闸门：`tests/test_security.py` 417 项（[X]23 + [Y]19 + [Z]7 + [AA]3 + [AB]3 + [AC]5 + [AD]3 + [AE]通道保持 3）
 
 > v1.8.1 热修：`tui.py pick()` 的 `for i, (label, _)` 把 i18n 函数 `_` 遮蔽成字符串，TUI 启动即 `TypeError`。修为 `val`，教训——冒烟只验了键集合相等、没真调一次 `pick`；现回归用 mock input 喂 `1`/`q` 真调，`_` 再被遮蔽当场被抓。
 >
@@ -499,3 +499,5 @@ python -u -X utf8 site_crawler.py updatecheck
 > v1.9.7 auto 自动驾驶（用户只给网址+做验证+拿内容，配置程序内部办）：实战 `ERR_NETWORK_ACCESS_DENIED`（本机出口被拦，直连 TLS 与导航同失败）导致 `auto` 首败即退。现 check 梯子至多 3 次有界重试——第 2 次换身份束 + 退避 5s（瞬时风控），第 3 次换浏览器通道 + 退避 10s（真 Chrome 可能自带代理配置；缺失通道由 `open_ctx` 原有回退接住），通道覆盖经 `site._auto_channel` 生效、用后清零，顺序由 `_eff_channel` 收敛。锁被其他活进程占用直接不重试。三振后：配了快照/文本代理则 `_snapshot_intel` 只读兜底（不改变失败结论），再打 verdict（配 `--proxy` 后重跑）并返回原码。退出码语义不变（2=基础设施失败），`[AC]` 锁定重试次数/兜底调用/覆盖清零/活锁跳过/通道顺序。注意：硬出口封锁重试救不了，verdict 会明说配代理；`wait` 仍是人机交互，不自动。
 >
 > v1.9.8 诚实梯子（修重试"换了个寂寞"）：实战发现梯子第 2 步日志写"已换身份束"但身份束号不变（只换了 UA/视口，`run_id` 未动），第 3 步写"换通道→chrome"但匿名简报仍显示 chromium（显示绕过了 `_eff_channel`）。现重试真换 `run_id`，简报显示有效通道。另 `_goto` 落盘 `_last_nav_hint`，verdict 按末次错误分类给处置：证书类→ `--insecure` 须知（跳过校验有中间人风险，建议同开 `--hijack-check`）；代理类→查 `--proxy` 链路；其他→配代理/查 URL；未配快照/文本时代理提示 `--snapshot wayback` 碰运气（只读情报）。程序永不自动降 TLS 校验（红线，须用户显式承担）。`[AD]` 锁定通道显示/导航 hint 落盘/身份轮换。
+>
+> v1.9.9 通道保持（修"check 切 chrome 能进、dl 掉回 chromium 又撞墙"）：梯子第 3 步切到的通道旧版在 check 结束即清零，wait/dl 全走默认通道。现覆盖保留到 `auto` 整轮结束（try/finally 跑完才清），wait 与 dl 同享胜利通道。另补两处静默：`dl` 首跳即断（visited=0）旧版无任何计数，现记 `dl_no_entry` + WARNING；`deep_dive` 无锚点可跟旧版无声跳过，现记 `dive_no_anchors` + 一行日志——与"有链不跟"（`dive_fallback` 未触发/关键词命中）区分开。`[AE]` 锁定：dl 阶段读到的确为 escalated 通道、结束后清零、零进入与无锚点计数。

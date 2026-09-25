@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 jjjjjjjjnnjnn
-"""通用站点媒体下载器 v1.9.8: 填网址 -> 检测人机验证 -> 需验证弹窗等人工 -> 自动全站下载.
+"""通用站点媒体下载器 v1.9.9: 填网址 -> 检测人机验证 -> 需验证弹窗等人工 -> 自动全站下载.
 
 用法 (python -u -X utf8 site_crawler.py ...):
   check <url>              只检测: 该站是否需要人机验证 (不下载, 不存页面内容)
@@ -87,7 +87,7 @@ from urllib import robotparser
 
 import requests
 
-__version__ = "1.9.8"
+__version__ = "1.9.9"
 
 # ---------------------------------------------------------------- 身份池
 UA_POOL = [
@@ -1505,13 +1505,20 @@ def _seed_ctx_cookies(site, ctx):
 
 
 def _dl_warn_empty(site, visited: int) -> bool:
-    """整轮零下载告警(反静默空跑): 进过页但 downloaded 为 0 即 WARNING.
+    """反静默空跑: visited==0(首跳即断, 一页未进)或进过页但零下载即 WARNING.
 
-    返回 True=告警过. 只记 empty_run 计数与一行日志, 不改退出码
+    返回 True=告警过. 只记 dl_no_entry/empty_run 计数与一行日志, 不改退出码
     (退出码语义冻结: 0=流程走完, 4=验证拦截; 空跑是否算错由人按 WARNING 判).
     """
     try:
-        if visited > 0 and site.counters.get("downloaded", 0) <= 0:
+        if visited <= 0:
+            if site.counters.get("downloaded", 0) <= 0:
+                site.bump("dl_no_entry")
+                site.log("WARNING 本轮未能进入任何页面(首跳即断/robots拦): "
+                         "建议检查网络与URL, 或跑 diag 看能否建连")
+                return True
+            return False
+        if site.counters.get("downloaded", 0) <= 0:
             site.bump("empty_run")
             site.log("WARNING 本轮零下载(空跑): 已进 %d 页但无一落盘. "
                      "建议跑 diag 看收割数(媒体0=被喂精简页/未渲染, "
@@ -3669,12 +3676,19 @@ def deep_dive(page, site, sess, anchors, idx: int, budget: int):
 
     两轮: 关键词命中优先; 零命中时回退试探同站前 2 个(门户页详情链无关键词
     时兜底, 如 /x/123.html 类; 同站约束防漫游, 同样走守卫/验证/预算, 记
-    dive_fallback). 非标锚点不再抛错(直接跳过).
+    dive_fallback). 非标锚点不再抛错(直接跳过). 无锚点可跟记 dive_no_anchors.
     """
     got = []
     state = [0]  # 本页已跟进数(至多2)
     visited = set()
     matched = [0]
+    if not anchors:
+        try:
+            site.bump("dive_no_anchors")
+            site.log("详情无锚点可跟(页内无详情链, 真流只能靠列表直链/网络捕获)")
+        except Exception:
+            pass
+        return got, False
 
     def _one(a):
         """跟进单个详情页. 返回 (reverify, descended)."""
@@ -4054,6 +4068,7 @@ def cmd_auto(site, batch: int = 60) -> int:
 
     check 梯子(至多 3 次, 有界不死磕): 1照常; 2换身份束+退避(瞬时风控);
     3换浏览器通道(本机网络拦截常与通道代理配置有关, 真 Chrome 可能自带代理).
+    梯子切到的通道会保留给后续 wait/dl 全程(跑完才清零), 不再 check 用完即丢.
     锁被其他活进程占用则不重试. 三振后: 配了快照/文本代理则只读情报兜底
     (不改变失败结论), 打处置 verdict 后返回原码. 成功仍走 wait/dl 老链.
     """
@@ -4092,45 +4107,47 @@ def cmd_auto(site, batch: int = 60) -> int:
             except Exception:
                 pass
     try:
-        site._auto_channel = ""
-    except Exception:
-        pass
-    if rc == 10:
-        rc = cmd_wait(site)
-        if rc != 0:
+        if rc == 10:
+            rc = cmd_wait(site)
+            if rc != 0:
+                return rc
+        elif rc != 0:
+            try:
+                if site.snapshot_mode() or site.text_proxy_base():
+                    site.log("auto直连失败: 转快照/文本代理情报兜底(只读)")
+                    _snapshot_intel(site, "原站直连失败")
+            except Exception:
+                pass
+            try:
+                _lh = getattr(site, "_last_nav_hint", "") or ""
+            except Exception:
+                _lh = ""
+            try:
+                if "证书" in _lh or "TLS" in _lh:
+                    site.log("auto终止: 对端证书不可信(3次). 若确认是自家网络/代理CA, "
+                             "可加 --insecure 重跑(跳过校验有中间人风险, "
+                             "建议同时开 --hijack-check); 否则检查出口网络")
+                elif "代理" in _lh:
+                    site.log("auto终止: 代理链路失败(3次). 检查 --proxy 进程/端口/认证后重跑")
+                else:
+                    site.log("auto终止: 本机直连失败(3次). 请配 --proxy 代理后重跑, "
+                             "或检查目标URL/出口网络")
+                if not (site.snapshot_mode() or site.text_proxy_base()):
+                    site.log("提示: 另可加 --snapshot wayback 碰运气(只读情报, 不下正文)")
+            except Exception:
+                pass
             return rc
-    elif rc != 0:
+        rc = cmd_dl(site, batch)
         try:
-            if site.snapshot_mode() or site.text_proxy_base():
-                site.log("auto直连失败: 转快照/文本代理情报兜底(只读)")
-                _snapshot_intel(site, "原站直连失败")
-        except Exception:
-            pass
-        try:
-            _lh = getattr(site, "_last_nav_hint", "") or ""
-        except Exception:
-            _lh = ""
-        try:
-            if "证书" in _lh or "TLS" in _lh:
-                site.log("auto终止: 对端证书不可信(3次). 若确认是自家网络/代理CA, "
-                         "可加 --insecure 重跑(跳过校验有中间人风险, "
-                         "建议同时开 --hijack-check); 否则检查出口网络")
-            elif "代理" in _lh:
-                site.log("auto终止: 代理链路失败(3次). 检查 --proxy 进程/端口/认证后重跑")
-            else:
-                site.log("auto终止: 本机直连失败(3次). 请配 --proxy 代理后重跑, "
-                         "或检查目标URL/出口网络")
-            if not (site.snapshot_mode() or site.text_proxy_base()):
-                site.log("提示: 另可加 --snapshot wayback 碰运气(只读情报, 不下正文)")
+            save_learn(site)
         except Exception:
             pass
         return rc
-    rc = cmd_dl(site, batch)
-    try:
-        save_learn(site)
-    except Exception:
-        pass
-    return rc
+    finally:
+        try:
+            site._auto_channel = ""
+        except Exception:
+            pass
 
 
 def cmd_diag(site) -> int:

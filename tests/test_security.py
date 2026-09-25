@@ -1638,13 +1638,44 @@ with _mock.patch.object(C, "cmd_check", side_effect=[2, 0]), \
     _rid0 = _sAC7.run_id
     atk("auto-reroll", C.cmd_auto(_sAC7, 60) == 0 and _sAC7.run_id != _rid0)
 
+print("[AE] 通道保持与零进入")
+
+
+class _SeenDl:
+    def __init__(self):
+        self.got = []
+
+    def __call__(self, site, batch):
+        self.got.append(getattr(site, "_auto_channel", "<missing>"))
+        return 0
+
+
+_seen = _SeenDl()
+with _mock.patch.object(C, "cmd_check", side_effect=[2, 2, 0]), \
+        _mock.patch.object(C, "cmd_dl", side_effect=_seen), \
+        _ACMocks()[0], _ACMocks()[1]:
+    _sAE = C.Site("https://auto8.invalid/", NS())
+    atk("auto-channel-persist", C.cmd_auto(_sAE, 60) == 0
+        and _seen.got == ["chrome"] and _sAE._auto_channel == "")
+_dsN = _FakeDiveSite()
+atk("dl-no-entry", C._dl_warn_empty(_dsN, 0) is True
+    and _dsN.counters.get("dl_no_entry") == 1)
+with _mock.patch.object(C, "_browser_guard", return_value=True), \
+        _mock.patch.object(C, "polite_sleep", lambda *a, **k: None):
+    _dsA = _FakeDiveSite()
+    _pgA = _FakeDivePage()
+    _budA = [20]
+    _gotA, _rvA = C.deep_dive(_pgA, _dsA, None, [], [0], _budA)
+    atk("dive-no-anchors", _gotA == [] and _rvA is False and _pgA.visited == []
+        and _budA == [20] and _dsA.counters.get("dive_no_anchors") == 1)
+
 print("\nREDTEAM: %d 项全部守住" % N)
 for x in (s, s2, s2h, s2v, s2i, s6, s7, s7b, s8, s_col, s_ns, s9, _sg,
           sA, sB, sC, sD, sD2, sE, sF, sF2, sG, sH, sT, sT2,
           sK0, sK1, sK2, sK3, sL0, sL1, sL2, sL3, sL4, sL5, sL6, sL7,
           sM0, sM1, sM2, sM3, sN0, sN1, sP, sP2, sQ, sQ2,
           sL, sYv, sYv2, _sR1, _sR2,
-          _sAC, _sAC2, _sAC3, _sAC4, _sAC5, _sAC6, _sAC7):
+          _sAC, _sAC2, _sAC3, _sAC4, _sAC5, _sAC6, _sAC7, _sAE):
     try:
         shutil.rmtree(x.root, ignore_errors=True)
     except Exception:
