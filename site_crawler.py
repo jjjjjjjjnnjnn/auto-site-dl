@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 jjjjjjjjnnjnn
-"""通用站点媒体下载器 v1.9.10: 填网址 -> 检测人机验证 -> 需验证弹窗等人工 -> 自动全站下载.
+"""通用站点媒体下载器 v1.9.11: 填网址 -> 检测人机验证 -> 需验证弹窗等人工 -> 自动全站下载.
 
 用法 (python -u -X utf8 site_crawler.py ...):
   check <url>              只检测: 该站是否需要人机验证 (不下载, 不存页面内容)
@@ -87,7 +87,7 @@ from urllib import robotparser
 
 import requests
 
-__version__ = "1.9.10"
+__version__ = "1.9.11"
 
 # ---------------------------------------------------------------- 身份池
 UA_POOL = [
@@ -1439,12 +1439,28 @@ def _load_cookie_pairs(site):
     值去首尾空白, 含 CTL/分号/逗号丢弃(cookie-octet 本就不含它们);
     值允许首个 = 之后再出现 =(base64 常见); 名长/值长/总对数封顶;
     同名取最后一次(与浏览器语义一致). 值永不打进日志.
+    主文件缺失/空时读 cookies.txt.bak 本地备份(只读回退, 用后 WARNING 提示重跑 wait).
     """
+    raw, used_bak = "", False
     try:
         with open(site.ckf, encoding="utf-8") as f:
             raw = f.read(65536)
     except Exception:
-        return []
+        raw = ""
+    if not (raw or "").strip():
+        try:
+            with open(site.ckf + ".bak", encoding="utf-8") as f:
+                raw = f.read(65536)
+            used_bak = bool((raw or "").strip())
+        except Exception:
+            return []
+        if not used_bak:
+            return []
+        try:
+            site.bump("session-bak-used")
+            site.log("WARNING 会话主文件缺失/空, 已启用本地备份(建议重跑 wait 刷新)")
+        except Exception:
+            pass
     pairs = []
     try:
         for seg in (raw or "").split(";"):
@@ -3896,10 +3912,18 @@ def cmd_wait(site, timeout: int = 300) -> int:
                 return 1
         if ok:
             try:
+                _jar = "; ".join('%s=%s' % (c["name"], c["value"])
+                                 for c in ctx.cookies())
                 with open(site.ckf, "w", encoding="utf-8") as f:
-                    f.write("; ".join('%s=%s' % (c["name"], c["value"])
-                                      for c in ctx.cookies()))
+                    f.write(_jar)
                 _chmod_0600(site.ckf)
+                try:  # 会话备份: 主文件被外部删除时兜底(只读回退, 建议重跑 wait)
+                    _bak = site.ckf + ".bak"
+                    with open(_bak, "w", encoding="utf-8") as f:
+                        f.write(_jar)
+                    _chmod_0600(_bak)
+                except Exception:
+                    pass
             except Exception as e:
                 site.log("会话保存失败: %s" % str(e)[:100])
                 return 1

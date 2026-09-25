@@ -1680,6 +1680,23 @@ atk("verify-bool-false", C.detect_verify(_pfn, _afn) is False
     and _afn._last_verify_sel == "")
 atk("verify-bool-nosite", C.detect_verify(_FakeDivePage(), None) is False)
 
+print("[AG] 会话备份")
+try:
+    os.remove(os.path.join(sX.root, "cookies.txt"))
+except OSError:
+    pass
+with open(os.path.join(sX.root, "cookies.txt.bak"), "w", encoding="utf-8") as _f:
+    _f.write("bk=1")
+atk("ck-bak", C._load_cookie_pairs(sX) == [("bk", "1")]
+    and sX.counters.get("session-bak-used") == 1)
+try:
+    os.remove(os.path.join(sX.root, "cookies.txt.bak"))
+except OSError:
+    pass
+with open(os.path.join(sX.root, "cookies.txt"), "w", encoding="utf-8") as _f:
+    _f.write("sess=abc123")
+atk("ck-main-first", C._load_cookie_pairs(sX) == [("sess", "abc123")])
+
 print("\nREDTEAM: %d 项全部守住" % N)
 for x in (s, s2, s2h, s2v, s2i, s6, s7, s7b, s8, s_col, s_ns, s9, _sg,
           sA, sB, sC, sD, sD2, sE, sF, sF2, sG, sH, sT, sT2,
