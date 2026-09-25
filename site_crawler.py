@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 jjjjjjjjnnjnn
-"""通用站点媒体下载器 v1.9.1: 填网址 -> 检测人机验证 -> 需验证弹窗等人工 -> 自动全站下载.
+"""通用站点媒体下载器 v1.9.2: 填网址 -> 检测人机验证 -> 需验证弹窗等人工 -> 自动全站下载.
 
 用法 (python -u -X utf8 site_crawler.py ...):
   check <url>              只检测: 该站是否需要人机验证 (不下载, 不存页面内容)
@@ -87,7 +87,7 @@ from urllib import robotparser
 
 import requests
 
-__version__ = "1.9.1"
+__version__ = "1.9.2"
 
 # ---------------------------------------------------------------- 身份池
 UA_POOL = [
@@ -227,6 +227,7 @@ JS_HARVEST = """() => ({
 JS_COUNT = "() => document.querySelectorAll('img,video,source,a[href]').length"
 
 _TLS_WARNED = False
+_BOT_WARNED = False
 _HLS_FFMPEG_WARNED = False
 
 # ================================================================ URL/网络安全
@@ -858,11 +859,19 @@ class Site:
 
     # -- 身份 --
     def pick_identity(self) -> None:
+        global _BOT_WARNED
         sp = self.spoof_mode()
         if sp:
             self.UA = SPOOF_PRESETS[sp]["ua"]
             self.viewport = dict(random.choice(
                 MOBILE_VIEWPORTS if SPOOF_PRESETS[sp]["mobile"] else VIEWPORTS))
+            try:  # bot 伪装: 浏览器仍挂爬虫 UA, 易被喂精简页/判脚本(每进程只警告一次)
+                if SPOOF_PRESETS[sp].get("bot") and not _BOT_WARNED:
+                    _BOT_WARNED = True
+                    self.log("WARNING bot伪装: 浏览器仍挂爬虫UA(易被喂精简页/判脚本), "
+                             "建议仅配合快照/文本代理用, 正文站请去掉 --spoof")
+            except Exception:
+                pass
             return
         self.UA = random.choice(UA_POOL)
         self.viewport = dict(random.choice(VIEWPORTS))
@@ -1468,6 +1477,24 @@ def _seed_ctx_cookies(site, ctx):
     except Exception:
         pass
     return True
+
+
+def _dl_warn_empty(site, visited: int) -> bool:
+    """整轮零下载告警(反静默空跑): 进过页但 downloaded 为 0 即 WARNING.
+
+    返回 True=告警过. 只记 empty_run 计数与一行日志, 不改退出码
+    (退出码语义冻结: 0=流程走完, 4=验证拦截; 空跑是否算错由人按 WARNING 判).
+    """
+    try:
+        if visited > 0 and site.counters.get("downloaded", 0) <= 0:
+            site.bump("empty_run")
+            site.log("WARNING 本轮零下载(空跑): 已进 %d 页但无一落盘. "
+                     "建议跑 diag 看收割数(媒体0=被喂精简页/未渲染, "
+                     "有媒体0下载=下载层被拦)" % visited)
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def make_session(site):
@@ -3606,6 +3633,7 @@ def cmd_dl(site, batch: int = 60, dl_jobs: int = 1) -> int:
     net_cap = []  # 网络层响应捕获: 导航期间路过的流地址
     url = site.url
     stop_verify = False
+    visited = 0
     try:
         _attach_capture(page, site, net_cap)
         for _ in range(max(1, batch)):
@@ -3617,6 +3645,7 @@ def cmd_dl(site, batch: int = 60, dl_jobs: int = 1) -> int:
             seen_page.add(url)
             if _goto(page, site, url):
                 break
+            visited += 1
             settle_lazy_load(page, site)
             nv, _ = detect_verify(page, site)
             if nv:
@@ -3625,6 +3654,11 @@ def cmd_dl(site, batch: int = 60, dl_jobs: int = 1) -> int:
                 break
             log_softwall(site, apply_softwall(page, site))  # 路径三: 遮罩挡收割先清
             media, anchors = harvest(page, site, url)
+            if not media and not anchors:
+                site.bump("harvest_zero")
+                if site.counters.get("harvest_zero", 0) == 1:
+                    site.log("WARNING 首个页面收割为0(无媒体无锚点): "
+                             "可能被喂精简页(bot UA?)/未渲染, 可跑 diag 对照")
             for u in net_cap:  # 网络层捕获优先(播放器 JS 动态拉流 DOM 看不见)
                 if u not in media:
                     media.append(u)
@@ -3696,6 +3730,10 @@ def cmd_dl(site, batch: int = 60, dl_jobs: int = 1) -> int:
         close_ctx(pw, browser, ctx)
     try:
         save_learn(site)
+    except Exception:
+        pass
+    try:
+        _dl_warn_empty(site, visited)
     except Exception:
         pass
     site.summary()

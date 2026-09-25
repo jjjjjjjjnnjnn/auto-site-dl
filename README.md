@@ -76,7 +76,7 @@ auto-site-dl/
 ├── watchflow.py          视频深层流程（取流状态机 + 并行下载池）
 ├── tui.py                终端交互 UI（中英双语）
 ├── i18n.py               语言探测与译表（纯标准库）
-├── tests/test_security.py 安全回归（红队自审，380 项，纯本地零网络）
+├── tests/test_security.py 安全回归（红队自审，384 项，纯本地零网络）
 ├── requirements.txt
 ├── MANUAL.md             操作手册
 ├── LICENSE               Apache-2.0
@@ -110,11 +110,12 @@ auto-site-dl/
 - **TUI 热修 v1.8.1**：`pick()` 循环变量遮蔽 `_` 致启动即崩，已改名 + 补真调用回归（mock input 喂 `1`/`q`）
 - **方向键 TUI v1.9.0**：终端下方向键菜单（首尾循环、记住光标），`AUTO_SITE_DL_LINE=1`/管道时回数字行模式
 - **会话交接 v1.9.1**：`wait` 存的 `cookies.txt` 自动喂给 `dl`/`check`/`watch` 的浏览器（`add_cookies`）与下载会话（`Cookie` 头）；解析夹紧防投毒（名须 token、值禁 CTL/分号逗号、封顶），值永不落日志
+- **空跑可观测 v1.9.2**：单页收割为 0 记 `harvest_zero` + 首现 WARNING；整轮零下载追加 WARNING（指引跑 `diag` 对照）；`--spoof googlebot|bingbot` 打 WARNING（浏览器仍挂爬虫 UA，易被喂精简页，建议仅配合快照/文本代理）
 
 ## 维护
 
 ```powershell
-python -u -X utf8 tests\test_security.py   # 回归闸门：380 项全过，exit 0
+python -u -X utf8 tests\test_security.py   # 回归闸门：384 项全过，exit 0
 python -X utf8 -m py_compile site_crawler.py watchflow.py tui.py i18n.py
 python -u -X utf8 site_crawler.py envcheck
 ```

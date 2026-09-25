@@ -568,6 +568,7 @@ _fresh1, _age1 = C.session_fresh(sG)
 atk("sess-nofile", _fresh1 is True and _age1 == -1.0)
 with open(sG.ckf, "w", encoding="utf-8") as _f:
     _f.write("a=b")
+os.utime(sG.ckf, None)  # 反 NTFS 隧道化: 删后速建同名文件会继承旧 mtime, 显式钉 now
 _fresh2, _age2 = C.session_fresh(sG)
 atk("sess-fresh", _fresh2 is True and 0 <= _age2 < 1)
 import time as _t
@@ -1307,6 +1308,16 @@ try:
     _sess.close()
 except Exception:
     pass
+sY0 = C.Site("https://empty.invalid/", NS())
+atk("empty-hit", C._dl_warn_empty(sY0, 3) is True
+    and sY0.counters.get("empty_run") == 1)
+sY0.bump("downloaded")
+atk("empty-nohit", C._dl_warn_empty(sY0, 3) is False
+    and C._dl_warn_empty(sY0, 0) is False)
+C._BOT_WARNED = False
+sB0 = C.Site("https://example.invalid/", NS(spoof="googlebot"))
+atk("bot-ua", "Googlebot" in sB0.UA)
+atk("bot-warned", C._BOT_WARNED is True)
 
 print("\nREDTEAM: %d 项全部守住" % N)
 for x in (s, s2, s2h, s2v, s2i, s6, s7, s7b, s8, s_col, s_ns, s9, _sg,
