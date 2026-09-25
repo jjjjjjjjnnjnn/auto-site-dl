@@ -1586,13 +1586,65 @@ _sAC6 = C.Site("https://auto6.invalid/", NS())
 atk("auto-channel", C._eff_channel(_sAC5) == "camoufox"
     and C._eff_channel(_sAC6) == "")
 
+print("[AD] 诚实梯子")
+
+
+class _FakeAnonSite:
+    def __init__(self):
+        self.args = NS(browser="")
+        self.cfg = {}
+        self.run_id = "abc"
+        self.lines = []
+        self._auto_channel = "camoufox"
+
+    def _proxy_list(self):
+        return []
+
+    @property
+    def proxy(self):
+        return ""
+
+    def log(self, *a):
+        self.lines.append(" ".join(str(x) for x in a))
+
+
+_an = _FakeAnonSite()
+C.anon_report(_an)
+atk("auto-channel-shown", any("通道=camoufox" in _l for _l in _an.lines))
+
+
+class _FakeNavSite:
+    def __init__(self):
+        self.lines = []
+
+    def log(self, *a):
+        self.lines.append(" ".join(str(x) for x in a))
+
+
+class _BoomNavPage:
+    def goto(self, url, wait_until=None, timeout=None):
+        raise RuntimeError("net::ERR_CERT_AUTHORITY_INVALID boom")
+
+
+with _mock.patch.object(C, "_browser_guard", return_value=True):
+    _ns = _FakeNavSite()
+    _hint = C._goto(_BoomNavPage(), _ns, "https://h/p")
+    atk("goto-hint", "证书" in _hint and _ns._last_nav_hint == _hint
+        and any("NAV-FAIL https://h/p" in _l for _l in _ns.lines))
+with _mock.patch.object(C, "cmd_check", side_effect=[2, 0]), \
+        _mock.patch.object(C, "cmd_dl", return_value=0), \
+        _ACMocks()[0], _ACMocks()[1]:
+    _sAC7 = C.Site("https://auto7.invalid/", NS())
+    _rid0 = _sAC7.run_id
+    atk("auto-reroll", C.cmd_auto(_sAC7, 60) == 0 and _sAC7.run_id != _rid0)
+
 print("\nREDTEAM: %d 项全部守住" % N)
 for x in (s, s2, s2h, s2v, s2i, s6, s7, s7b, s8, s_col, s_ns, s9, _sg,
           sA, sB, sC, sD, sD2, sE, sF, sF2, sG, sH, sT, sT2,
           sK0, sK1, sK2, sK3, sL0, sL1, sL2, sL3, sL4, sL5, sL6, sL7,
           sM0, sM1, sM2, sM3, sN0, sN1, sP, sP2, sQ, sQ2,
           sL, sYv, sYv2, _sR1, _sR2,
-          _sAC, _sAC2, _sAC3, _sAC4, _sAC5, _sAC6):
+          _sAC, _sAC2, _sAC3, _sAC4, _sAC5, _sAC6, _sAC7):
     try:
         shutil.rmtree(x.root, ignore_errors=True)
     except Exception:

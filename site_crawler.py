@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 jjjjjjjjnnjnn
-"""通用站点媒体下载器 v1.9.7: 填网址 -> 检测人机验证 -> 需验证弹窗等人工 -> 自动全站下载.
+"""通用站点媒体下载器 v1.9.8: 填网址 -> 检测人机验证 -> 需验证弹窗等人工 -> 自动全站下载.
 
 用法 (python -u -X utf8 site_crawler.py ...):
   check <url>              只检测: 该站是否需要人机验证 (不下载, 不存页面内容)
@@ -87,7 +87,7 @@ from urllib import robotparser
 
 import requests
 
-__version__ = "1.9.7"
+__version__ = "1.9.8"
 
 # ---------------------------------------------------------------- 身份池
 UA_POOL = [
@@ -674,8 +674,7 @@ def anon_report(site) -> int:
         lv = 0
     names = {0: "L0直连(真实IP暴露)", 1: "L1单代理", 2: "L2轮换池(每次出口随机不同)"}
     try:
-        ch = (_cfg_str(getattr(site.args, "browser", ""))
-              or _cfg_str(site.cfg.get("browser", "")) or "chromium").lower()
+        ch = _eff_channel(site) or "chromium"
     except Exception:
         ch = "chromium"
     site.log("匿名: %s 身份束#%s 通道=%s"
@@ -3771,12 +3770,20 @@ def deep_dive(page, site, sess, anchors, idx: int, budget: int):
 # ================================================================ 模式
 def _goto(page, site, url: str):
     if not _browser_guard(site, url):
+        try:
+            site._last_nav_hint = "内网目标已拦截"
+        except Exception:
+            pass
         return "内网目标已拦截"
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=30000)
         return ""
     except Exception as e:
         hint = diagnose_nav_error(str(e))
+        try:
+            site._last_nav_hint = hint
+        except Exception:
+            pass
         site.log("NAV-FAIL %s 诊断: %s" % (url_for_log(url), hint))
         return hint
 
@@ -4056,6 +4063,7 @@ def cmd_auto(site, batch: int = 60) -> int:
         if attempt == 2:
             try:
                 site.pick_identity()
+                site.run_id = "%08x" % random.getrandbits(32)
                 site.log("auto重试(%d/%d): 已换身份束" % (attempt, AUTO_CHECK_TRIES))
             except Exception:
                 pass
@@ -4064,6 +4072,7 @@ def cmd_auto(site, batch: int = 60) -> int:
                 cur = (_cfg_str(getattr(site.args, "browser", "")) or "").lower()
                 site._auto_channel = "chrome" if cur in ("", "chromium") else "chromium"
                 site.pick_identity()
+                site.run_id = "%08x" % random.getrandbits(32)
                 site.log("auto重试(%d/%d): 换浏览器通道→%s"
                          % (attempt, AUTO_CHECK_TRIES, site._auto_channel))
             except Exception:
@@ -4098,8 +4107,21 @@ def cmd_auto(site, batch: int = 60) -> int:
         except Exception:
             pass
         try:
-            site.log("auto终止: 本机直连失败(%d次). 请配 --proxy 代理后重跑, "
-                     "或检查目标URL/出口网络" % AUTO_CHECK_TRIES)
+            _lh = getattr(site, "_last_nav_hint", "") or ""
+        except Exception:
+            _lh = ""
+        try:
+            if "证书" in _lh or "TLS" in _lh:
+                site.log("auto终止: 对端证书不可信(3次). 若确认是自家网络/代理CA, "
+                         "可加 --insecure 重跑(跳过校验有中间人风险, "
+                         "建议同时开 --hijack-check); 否则检查出口网络")
+            elif "代理" in _lh:
+                site.log("auto终止: 代理链路失败(3次). 检查 --proxy 进程/端口/认证后重跑")
+            else:
+                site.log("auto终止: 本机直连失败(3次). 请配 --proxy 代理后重跑, "
+                         "或检查目标URL/出口网络")
+            if not (site.snapshot_mode() or site.text_proxy_base()):
+                site.log("提示: 另可加 --snapshot wayback 碰运气(只读情报, 不下正文)")
         except Exception:
             pass
         return rc
