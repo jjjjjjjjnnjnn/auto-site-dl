@@ -1,6 +1,6 @@
 # 操作手册（MANUAL）
 
-对应版本：v1.7.0 ｜ 适用系统：Windows 10/11（PowerShell）｜ Python ≥ 3.9
+对应版本：v1.8.0 ｜ 适用系统：Windows 10/11（PowerShell）｜ Python ≥ 3.9
 
 ---
 
@@ -238,7 +238,7 @@ python -u -X utf8 site_crawler.py dl https://example.com/ 60 --allow-cdn --no-vi
 ## 7. 日常维护
 
 ```powershell
-python -u -X utf8 tests\test_security.py   # 回归：351 项全过 exit 0（改代码必跑）
+python -u -X utf8 tests\test_security.py   # 回归：368 项全过 exit 0（改代码必跑）
 python -X utf8 -m py_compile site_crawler.py watchflow.py tui.py
 python -u -X utf8 site_crawler.py envcheck
 python -u -X utf8 site_crawler.py verify https://example.com/   # 离线自证下载物
@@ -408,3 +408,40 @@ python -u -X utf8 site_crawler.py check https://example.com/ --hijack-check --re
 | AV 免杀 | 不做（纯 malware tradecraft；对应需求由完整性自检 + AV 信任区覆盖，见 README） |
 
 - 回归闸门：`tests/test_security.py` 351 项（[V]攻击侧自测12）
+
+---
+
+## 14. 自我学习/更新/收集/进化（v1.8.0，有限制）+ 语言选择
+
+### 14.1 学什么、存在哪、谁能关
+
+- 档案：`sites/<host>/learn.json`，固定 schema 六键（version/delay/engine_hits/last_challenge/fails_429/updated），版本错配整节丢弃
+- 学三样：拥塞自适应延迟（每次拥塞 +0.5s，上限 10s，下轮超当前下限即采用并明示）/ 引擎命中榜（只建议不强制改链）/ 挑战记忆（收尾从 counters 回填）
+- 不学四样：URL、Cookie/凭证、请求头、正文——学习函数只碰计数器与延迟数字（回归 `learn-clamp` 锁定 `url/cookie` 键被丢弃）
+- 总开关：`--no-learn` 或 `config.json` 的 `"learn": false`，一键停读写；TUI 有"自学习"开关
+- 无外发：learn.json 永不离开本站目录；更新检查只读 GitHub releases tag，不上报任何本机信息
+
+### 14.2 更新检查（只通知）
+
+```powershell
+python -u -X utf8 site_crawler.py updatecheck
+```
+
+- 问 `api.github.com` 最新 release tag，与本地 `__version__` 比；有新版只打印"请手动 git pull"，**永不自动下载/执行**（供应链红线）
+- 失败（网络/代理）返回 2 并明示原因，不静默
+
+### 14.3 进化边界（诚实）
+
+- 会进化的：延迟下限、引擎建议、挑战记忆——都是"同一策略的参数"，不改变安全基座（SSRF/守卫/脱敏零豁免）
+- 不进化的：白名单、守卫阈值、脱敏规则——安全基座只能由人改代码 + 过回归，不能被"学"松（否则就是用学习挖洞）
+- 引擎链顺序不变：榜首只打建议日志，防止学偏导致冷门引擎饥饿
+
+### 14.4 语言选择（i18n）
+
+- `i18n.py`（纯标准库）：优先级 `--lang` > cfg `lang` > 环境 LANG/LANGUAGE > 系统 locale > 英语
+- 系统探测：locale 含 zh 即中文，其余一律英语；探测失败回英语（按需求）
+- 缺键回退链：当前语言 → 英语 → key 本身，永不抛（回归锁定中英键集合相等）
+- 覆盖：TUI 全量双语（含危险区 YES 确认）；引擎日志暂中文（增量中）；`--lang` 已直通引擎，TUI 有"语言"开关（auto→zh→en 循环）
+- 用法：`python -u -X utf8 tui.py --lang en`；`site_crawler.py … --lang en`
+
+- 回归闸门：`tests/test_security.py` 368 项（[X]学习限制与i18n 17）

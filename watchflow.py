@@ -260,6 +260,10 @@ def cmd_watch(site, batch: int = 10, dl_jobs: int = 3) -> int:
     site.log("TARGET=%s MODE=watch v%s jobs=%d" % (site.url, C.__version__, dl_jobs))
     if C.preflight(site) == 2:
         return 2
+    try:
+        C.apply_learn(site)
+    except Exception:
+        pass
     if not C._disk_ok(site.dl):
         site.log("WARNING 磁盘剩余不足500MB, 仍继续(可能中途失败)")
     sess, kind = C.make_session(site)
@@ -359,6 +363,10 @@ def cmd_watch(site, batch: int = 10, dl_jobs: int = 3) -> int:
                     pass
     finally:
         C.close_ctx(pw, browser, ctx)
+    try:
+        C.save_learn(site)
+    except Exception:
+        pass
     site.summary()
     return 0
 

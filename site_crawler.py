@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 jjjjjjjjnnjnn
-"""通用站点媒体下载器 v1.7.0: 填网址 -> 检测人机验证 -> 需验证弹窗等人工 -> 自动全站下载.
+"""通用站点媒体下载器 v1.8.0: 填网址 -> 检测人机验证 -> 需验证弹窗等人工 -> 自动全站下载.
 
 用法 (python -u -X utf8 site_crawler.py ...):
   check <url>              只检测: 该站是否需要人机验证 (不下载, 不存页面内容)
@@ -14,6 +14,7 @@
   purge <url>              清扫: 补/纠正扩展名, 隔离非媒体到 rejected/(纯本地, 不联网)
   verify <url>             自证: 按 inventory.csv 重算 sha256(纯本地, 不联网)
   replay <url>             重放自测: cookie 换身份只读重放(仅自有/授权站, 只 GET)
+  updatecheck              检查 GitHub 新版本(只通知, 永不自动下载/执行)
   envcheck [url]           环境自检: 依赖/浏览器/引擎 (纯本地, 不碰目标站)
 
 选项 (加在末尾):
@@ -28,6 +29,9 @@
   --lock-session           会话独占锁(防他进程并发写cookies.txt)
   --hijack-check           劫持检测: TOFU 证书钉扎(默认关, 变更只告警不阻断)
   --repin                  证书重钉(人工确认换证合法后, 与 --hijack-check 同用)
+  --lang LANG              语言 auto/zh/en(默认auto=系统语言, 取不到回英语;
+                             引擎日志暂中文, TUI 已双语)
+  --no-learn               关闭自我学习(不读写本站 learn.json)
   --spoof MODE             请求伪装: googlebot/bingbot/mobile(默认off);
                              bot类强制requests+告警, mobile同步移动视口与头
   --spoof-referer URL      伪装Referer(只收http(s), 非法值丢弃)
@@ -83,7 +87,7 @@ from urllib import robotparser
 
 import requests
 
-__version__ = "1.7.0"
+__version__ = "1.8.0"
 
 # ---------------------------------------------------------------- 身份池
 UA_POOL = [
@@ -343,7 +347,7 @@ KNOWN_CFG_KEYS = frozenset([
     "locale", "timezone_id", "lazy_rounds", "extra_verify_selectors",
     "extra_headers", "ad_keywords", "session_ttl_h", "hls_key",
     "snapshot", "softwall", "text_proxy", "spoof", "spoof_referer",
-    "tls_spoof", "rules",
+    "tls_spoof", "rules", "learn", "lang",
 ])
 
 
@@ -835,6 +839,7 @@ class Site:
             pass
         self.proxy = getattr(args, "proxy", "") or ""
         self.counters = defaultdict(int)
+        self.learn = load_learn(self)
         self.fails = []
         self._proxy_idx = 0
         self._cloned_done = False
@@ -1152,6 +1157,12 @@ class Site:
             self.delay_mult = min(5.0, float(self.delay_mult or 1.0) * 1.5)
         except Exception:
             self.delay_mult = 1.0
+        try:  # 学习: 拥塞即把学习延迟上调 0.5s(上限 10s), 落盘在收尾
+            if learn_on(self):
+                cur = float((self.learn or {}).get("delay", 1.2) or 1.2)
+                self.learn["delay"] = round(min(10.0, cur + 0.5), 1)
+        except Exception:
+            pass
 
     def want_clone(self) -> bool:
         """是否启用真实浏览器 profile 克隆: 有 --clone-profile 路径即开."""
@@ -2190,6 +2201,149 @@ def _take_session_lock(site) -> bool:
         return True
 
 
+# ================================================================ 自我学习(本地进化, 有限制)
+# 限制(写死): 只存本站 learn.json, 不含 URL/Cookie/头/正文, 无外发;
+# schema 固定 + 取值夹紧, 版本错配整节丢弃; --no-learn / cfg learn:false 一键全关.
+LEARN_VERSION = 1
+LEARN_FILE = "learn.json"
+
+
+def learn_on(site) -> bool:
+    """学习总开关: 默认开; --no-learn 或 cfg learn:false 即全关."""
+    try:
+        if getattr(site.args, "no_learn", False):
+            return False
+    except Exception:
+        pass
+    try:
+        return bool(site.cfg.get("learn", True))
+    except Exception:
+        return True
+
+
+def _learn_path(site) -> str:
+    return os.path.join(site.root, LEARN_FILE)
+
+
+def _clamp_learn(raw) -> dict:
+    """学习档案清洗: 非 dict/版本错配回默认; 数值夹紧; 引擎榜只留前 8."""
+    d = {"version": LEARN_VERSION, "delay": 1.2, "engine_hits": {},
+         "last_challenge": "", "fails_429": 0, "updated": 0}
+    try:
+        if not isinstance(raw, dict) or raw.get("version") != LEARN_VERSION:
+            return d
+        try:
+            d["delay"] = round(max(0.2, min(10.0, float(raw.get("delay", 1.2)))), 1)
+        except Exception:
+            pass
+        try:
+            hits = raw.get("engine_hits") or {}
+            clean = {}
+            for k, v in hits.items():
+                if isinstance(k, str) and len(k) <= 32:
+                    clean[k[:32]] = max(0, min(9999, int(v)))
+            d["engine_hits"] = dict(sorted(clean.items(),
+                                           key=lambda kv: -kv[1])[:8])
+        except Exception:
+            pass
+        try:
+            lc = str(raw.get("last_challenge", "") or "")[:32]
+            d["last_challenge"] = lc if re.fullmatch(r"[A-Za-z0-9_\-]+", lc) else ""
+        except Exception:
+            pass
+        try:
+            d["fails_429"] = max(0, min(999999, int(raw.get("fails_429", 0))))
+        except Exception:
+            pass
+        try:
+            d["updated"] = max(0, min(9999999999, int(raw.get("updated", 0))))
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return d
+
+
+def load_learn(site) -> dict:
+    try:
+        with open(_learn_path(site), encoding="utf-8") as f:
+            return _clamp_learn(json.load(f))
+    except Exception:
+        return _clamp_learn(None)
+
+
+def save_learn(site) -> None:
+    """收尾落盘: 计数器回填(fails_429/ App 本轮挑战) + 时间戳. 关了就不写."""
+    try:
+        if not learn_on(site):
+            return
+        d = _clamp_learn(getattr(site, "learn", None))
+        try:
+            d["fails_429"] = max(d["fails_429"],
+                                 int(site.counters.get("retry_429", 0) or 0))
+        except Exception:
+            pass
+        try:
+            best, bestn = "", 0
+            for k, v in (site.counters or {}).items():
+                if k.startswith("challenge-") and int(v or 0) > bestn:
+                    best, bestn = k, int(v)
+            if best:
+                d["last_challenge"] = best[:32]
+        except Exception:
+            pass
+        try:
+            import time as _t
+            d["updated"] = int(_t.time())
+        except Exception:
+            pass
+        with open(_learn_path(site), "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        pass
+
+
+def learn_hit(site, engine: str) -> None:
+    """引擎命中记账(内存, 收尾落盘): 只记引擎名, 上限 8 名."""
+    try:
+        if not learn_on(site) or not engine:
+            return
+        eh = dict((site.learn or {}).get("engine_hits", {}) or {})
+        eh[engine] = min(9999, int(eh.get(engine, 0) or 0) + 1)
+        site.learn["engine_hits"] = dict(sorted(eh.items(),
+                                                key=lambda kv: -kv[1])[:8])
+    except Exception:
+        pass
+
+
+def apply_learn(site) -> None:
+    """开工应用: 学习延迟高于当前下限即采用并明示; 引擎榜只建议不强制."""
+    try:
+        if not learn_on(site):
+            return
+        try:
+            cur = float(site.cfg.get("delay", 1.2) or 1.2)
+        except Exception:
+            cur = 1.2
+        try:
+            want = float((site.learn or {}).get("delay", 1.2) or 1.2)
+        except Exception:
+            want = 1.2
+        if want > cur:
+            site.cfg["delay"] = round(want, 1)
+            site.log("LEARN 延迟自适应%.1fs(历史拥塞学到, cfg/开关可覆盖, --no-learn 关)"
+                     % round(want, 1))
+        try:
+            hits = (site.learn or {}).get("engine_hits") or {}
+            if hits:
+                top = max(hits.items(), key=lambda kv: kv[1])[0]
+                site.log("LEARN 引擎榜首%s(仅建议, 引擎链顺序不变)" % top)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
 def _note_mitm(site, reason: str, url: str) -> None:
     """MITM 异常信号: 只记账+单行日志, 永不阻断(防误杀)."""
     try:
@@ -3054,6 +3208,7 @@ def fetch_m3u8(site, url: str, idx: int, referer: str, sess=None):
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
             if r.returncode == 0 and check_magic(final) == ".mp4":
                 record(site, url, final, "m3u8:n_m3u8dl")
+                learn_hit(site, "n_m3u8dl")
                 return final
         exe = find_exe(["yt-dlp.exe", "yt-dlp"])
         if exe:
@@ -3070,6 +3225,7 @@ def fetch_m3u8(site, url: str, idx: int, referer: str, sess=None):
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
             if r.returncode == 0 and check_magic(final) == ".mp4":
                 record(site, url, final, "m3u8:ytdlp")
+                learn_hit(site, "ytdlp")
                 return final
             err = (r.stderr or "").strip().splitlines()
             site.note_fail(url, "ytdlp:" + (err[-1][:100] if err else "rc=%s" % r.returncode))
@@ -3088,6 +3244,7 @@ def fetch_m3u8(site, url: str, idx: int, referer: str, sess=None):
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
             if r.returncode == 0 and check_magic(final) == ".mp4":
                 record(site, url, final, "m3u8:ffmpeg")
+                learn_hit(site, "ffmpeg")
                 return final
         site.note_fail(url, "no-engine")
         return ""
@@ -3305,6 +3462,10 @@ def cmd_dl(site, batch: int = 60, dl_jobs: int = 1) -> int:
     site.log("TARGET=%s MODE=dl v%s" % (site.url, __version__))
     if preflight(site) == 2:
         return 2
+    try:
+        apply_learn(site)
+    except Exception:
+        pass
     if not _disk_ok(site.dl):
         site.log("WARNING 磁盘剩余不足500MB, 仍继续(可能中途失败)")
     if os.path.isfile(site.ckf):
@@ -3432,6 +3593,10 @@ def cmd_dl(site, batch: int = 60, dl_jobs: int = 1) -> int:
             polite_sleep(site)
     finally:
         close_ctx(pw, browser, ctx)
+    try:
+        save_learn(site)
+    except Exception:
+        pass
     site.summary()
     return 4 if stop_verify else 0
 
@@ -3444,7 +3609,12 @@ def cmd_auto(site, batch: int = 60) -> int:
             return rc
     elif rc != 0:
         return rc
-    return cmd_dl(site, batch)
+    rc = cmd_dl(site, batch)
+    try:
+        save_learn(site)
+    except Exception:
+        pass
+    return rc
 
 
 def cmd_diag(site) -> int:
@@ -3616,6 +3786,54 @@ def cmd_verify(site) -> int:
     return 1 if bad else 0
 
 
+UPDATE_REPO = "jjjjjjjjnnjnn/auto-site-dl"
+UPDATE_API = "https://api.github.com/repos/%s/releases/latest" % UPDATE_REPO
+
+
+def _ver_cmp(a: str, b: str) -> int:
+    """纯函数版本号比较: 1/-1/0. 非法段按 0, 前导 v 忽略."""
+    def _t(v):
+        out = []
+        for x in (v or "").strip().lstrip("vV").split("."):
+            try:
+                out.append(int("".join(c for c in x if c.isdigit()) or 0))
+            except Exception:
+                out.append(0)
+        return (out + [0, 0, 0])[:3]
+    ta, tb = _t(a), _t(b)
+    return 1 if ta > tb else (-1 if ta < tb else 0)
+
+
+def cmd_updatecheck(args=None) -> int:
+    """更新检查(只通知, 永不下载/执行): 问 GitHub releases 最新 tag, 与本地比."""
+    try:
+        from i18n import set_lang as _set, _
+        _set(getattr(args, "lang", "auto") or "auto")
+    except Exception:
+        def _(k, *a):
+            try:
+                return k % a if a else k
+            except Exception:
+                return k
+    try:
+        r = requests.get(UPDATE_API, timeout=15,
+                         headers={"Accept": "application/vnd.github+json",
+                                  "User-Agent": "auto-site-dl/%s" % __version__})
+        tag = (r.json().get("tag_name", "") or "").strip()
+    except Exception as e:
+        print(_("upd_fail", str(e)[:80]))
+        return 2
+    if not tag:
+        print(_("upd_fail", "empty tag"))
+        return 2
+    c = _ver_cmp(tag, __version__)
+    if c > 0:
+        print(_("upd_avail", tag, "v" + __version__))
+    else:
+        print(_("upd_ok", "v" + __version__))
+    return 0
+
+
 def _integrity_selfcheck():
     """完整性自检(轻量, 非 verify 替代): 入库 .py 的 LICENSE 头 + py_compile.
 
@@ -3733,7 +3951,8 @@ def build_parser():
         description="通用站点媒体下载器 v%s: 填网址->检测验证->人工验证->自动下载" % __version__)
     ap.add_argument("mode", nargs="?", default="envcheck",
                     choices=["check", "wait", "dl", "auto", "diag", "watch",
-                             "nav", "purge", "verify", "replay", "envcheck"])
+                             "nav", "purge", "verify", "replay", "updatecheck",
+                             "envcheck"])
     ap.add_argument("url", nargs="?", default="")
     ap.add_argument("batch", nargs="?", type=int, default=60)
     ap.add_argument("--allow-cdn", action="store_true")
@@ -3746,6 +3965,11 @@ def build_parser():
                     help="劫持检测: TOFU证书钉扎(默认关)")
     ap.add_argument("--repin", dest="repin", action="store_true",
                     help="证书重钉(人工确认合法后)")
+    ap.add_argument("--lang", default="auto",
+                    choices=["", "auto", "zh", "en"],
+                    help="语言: auto=系统语言, 取不到回英语")
+    ap.add_argument("--no-learn", dest="no_learn", action="store_true",
+                    help="关闭自我学习(不读写learn.json)")
     ap.add_argument("--browser", default="",
                     choices=["", "chromium", "chrome", "edge", "camoufox"],
                     help="浏览器通道: camoufox=C++层指纹(最强); chrome/edge=本机真实浏览器")
@@ -3781,6 +4005,8 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     if a.mode == "envcheck":
         return cmd_envcheck()
+    if a.mode == "updatecheck":
+        return cmd_updatecheck(a)
     if not a.url:
         ap.error("需要目标URL")
     if not re.match(r"^https?://", a.url.strip()):

@@ -4,12 +4,16 @@
 
 站点页 -> 操作页 -> 运行(跟日志).
 数字 选择, Enter 确认, q 返回.
+双语: --lang auto|zh|en (默认 auto=系统语言, 取不到回英语).
 """
 import os
 import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, ROOT)
+from i18n import _, set_lang  # noqa: E402
+
 PY = sys.executable
 
 
@@ -41,12 +45,16 @@ def fmt_size(n: int) -> str:
     return "%dTB" % n
 
 
+def _onoff(v) -> str:
+    return _("v_on") if v else _("v_off")
+
+
 def pick(title: str, items):
     """items: [(显示, 值)]. 返回值或None(q退出). 支持数字快捷键."""
     print("\n== %s ==" % title)
     for i, (label, _) in enumerate(items, 1):
         print("  %d. %s" % (i, label))
-    print("  q. 返回")
+    print(_("pick_back"))
     while True:
         try:
             s = input("> ").strip().lower()
@@ -56,17 +64,17 @@ def pick(title: str, items):
             return None
         if s.isdigit() and 1 <= int(s) <= len(items):
             return items[int(s) - 1][1]
-        print("输入序号或 q")
+        print(_("pick_hint"))
 
 
 def run_cmd(cmd):
-    print("执行: " + " ".join(cmd[3:]))
-    print("(Ctrl+C 停止)")
+    print(_("run_exec") + " ".join(cmd[3:]))
+    print(_("run_stop"))
     proc = subprocess.Popen(cmd, cwd=ROOT)
     try:
         proc.wait()
     except KeyboardInterrupt:
-        print("\n正在停止…")
+        print(_("run_stopping"))
         try:
             proc.terminate()
             proc.wait(timeout=10)
@@ -75,9 +83,9 @@ def run_cmd(cmd):
                 proc.kill()
             except Exception:
                 pass
-    print("退出码: %d" % proc.returncode)
+    print(_("run_exit") % proc.returncode)
     try:
-        input("回车继续…")
+        input(_("run_continue"))
     except (EOFError, KeyboardInterrupt):
         pass
     return proc.returncode
@@ -100,7 +108,7 @@ def build_cmd(mode: str, url: str, opts: dict):
         if os.path.isdir(src):
             cmd += ["--clone-profile", src]
         else:
-            print("⚠ 未找到本机 Chrome profile, 跳过克隆")
+            print(_("clone_miss"))
     if opts.get("proxy"):
         cmd += ["--proxy", opts["proxy"]]
     if opts.get("column"):
@@ -125,6 +133,10 @@ def build_cmd(mode: str, url: str, opts: dict):
         cmd += ["--lock-session"]
     if opts.get("hijack"):
         cmd += ["--hijack-check"]
+    if opts.get("lang") and opts.get("lang") != "auto":
+        cmd += ["--lang", opts["lang"]]
+    if not opts.get("learn", True):
+        cmd += ["--no-learn"]
     if mode in ("watch", "dl"):
         cmd += ["--dl-jobs", str(int(opts.get("jobs", 3)))]
     return cmd
@@ -135,40 +147,48 @@ def action_page(url: str, opts: dict):
     while True:
         root = os.path.join(ROOT, "sites", host)
         files, total, rows = site_stats(root)
+        tg, st = _("act_toggle"), _("act_set")
         r = pick(
-            "%s (文件%d %s 记账%d行)" % (host, files, fmt_size(total), rows),
-            [(("🚀 全流程 auto", "auto")),
-             (("🔍 检测 check", "check")),
-             (("🪟 人工验证 wait", "wait")),
-             (("⬇ 下载 dl", "dl")),
-             (("🎬 深层视频 watch", "watch")),
-             (("🧭 栏目测绘 nav", "nav")),
-              (("🧹 清扫 purge", "purge")),
-              (("✅ 离线自证 verify", "verify")),
-              (("☠ 会话重放自测 replay(需YES确认)", "replay")),
-             (("🩺 环境自检 envcheck", "envcheck")),
-             (("⚙ CDN媒体: %s (切)" % ("开" if opts["cdn"] else "关"), "t_cdn")),
-             (("⚙ 允许http: %s (切)" % ("开" if opts["http"] else "关"), "t_http")),
-             (("⚠ 忽略证书: %s (切)" % ("开" if opts["insecure"] else "关"), "t_ins")),
-             (("⚙ 浏览器: %s (切)" % (opts["browser"] or "chromium"), "t_browser")),
-             (("⚙ 克隆profile: %s (切)" % ("开" if opts["clone"] else "关"), "t_clone")),
-             (("⚙ 中转代理: %s (设)" % (opts["proxy"] or "无"), "t_proxy")),
-              (("⚙ 栏目过滤: %s (设)" % (opts["column"] or "无"), "t_column")),
-              (("⚙ 伪装: %s (切)" % (opts["spoof"] or "off"), "t_spoof")),
-              (("⚙ 伪装Referer: %s (设)" % (opts["spoof_referer"] or "无"),
-                "t_spoofref")),
-              (("⚙ 快照: %s (切)" % (opts["snapshot"] or "off"), "t_snap")),
-              (("⚙ 干预: %s (切)" % (opts["softwall"] or "off"), "t_soft")),
-              (("⚙ 文本代理: %s (设)" % (opts["text_proxy"] or "无"),
-                "t_textpx")),
-              (("⚙ HLS密钥: %s (设)" % (opts["hls_key"] or "无"),
-                "t_hlskey")),
-              (("⚙ 视频优先: %s (切)" % ("开" if opts["video"] else "关"), "t_video")),
-              (("⚙ 会话独占锁: %s (切)" % ("开" if opts["lock"] else "关"), "t_lock")),
-              (("⚠ 劫持检测: %s (切)" % ("开" if opts["hijack"] else "关"), "t_hijack")),
-              (("⚠ 证书重钉 repin(跑check)", "t_repin")),
-             (("⚙ 每轮页数: %d (设)" % opts["batch"], "t_batch")),
-             (("⚙ 下载并发: %d (设)" % opts["jobs"], "t_jobs")),
+            _("fmt_stats", host, files, fmt_size(total), rows),
+            [((_("m_auto"), "auto")),
+             ((_("m_check"), "check")),
+             ((_("m_wait"), "wait")),
+             ((_("m_dl"), "dl")),
+             ((_("m_watch"), "watch")),
+             ((_("m_nav"), "nav")),
+             ((_("m_purge"), "purge")),
+             ((_("m_verify"), "verify")),
+             ((_("m_replay"), "replay")),
+             ((_("m_envcheck"), "envcheck")),
+             ((_("m_updatecheck"), "updatecheck")),
+             ((_("fmt_opt", _("L_cdn"), _onoff(opts["cdn"]), tg), "t_cdn")),
+             ((_("fmt_opt", _("L_http"), _onoff(opts["http"]), tg), "t_http")),
+             ((_("fmt_opt", _("L_ins"), _onoff(opts["insecure"]), tg), "t_ins")),
+             ((_("fmt_opt", _("L_browser"),
+                 opts["browser"] or _("v_browser_default"), tg), "t_browser")),
+             ((_("fmt_opt", _("L_clone"), _onoff(opts["clone"]), tg), "t_clone")),
+             ((_("fmt_opt", _("L_proxy"), opts["proxy"] or _("v_none"), st),
+               "t_proxy")),
+             ((_("fmt_opt", _("L_column"), opts["column"] or _("v_none"), st),
+               "t_column")),
+             ((_("fmt_opt", _("L_spoof"), opts["spoof"] or "off", tg), "t_spoof")),
+             ((_("fmt_opt", _("L_spoofref"), opts["spoof_referer"] or _("v_none"),
+                 st), "t_spoofref")),
+             ((_("fmt_opt", _("L_snap"), opts["snapshot"] or "off", tg), "t_snap")),
+             ((_("fmt_opt", _("L_soft"), opts["softwall"] or "off", tg), "t_soft")),
+             ((_("fmt_opt", _("L_textpx"), opts["text_proxy"] or _("v_none"), st),
+               "t_textpx")),
+             ((_("fmt_opt", _("L_hlskey"), opts["hls_key"] or _("v_none"), st),
+               "t_hlskey")),
+             ((_("fmt_opt", _("L_video"), _onoff(opts["video"]), tg), "t_video")),
+             ((_("fmt_opt", _("L_lock"), _onoff(opts["lock"]), tg), "t_lock")),
+             ((_("fmt_opt", _("L_hijack"), _onoff(opts["hijack"]), tg), "t_hijack")),
+             ((_("fmt_repin"), "t_repin")),
+             ((_("fmt_opt", _("L_learn"), _onoff(opts.get("learn", True)), tg),
+               "t_learn")),
+             ((_("fmt_opt", _("L_lang"), opts.get("lang", "auto"), tg), "t_lang")),
+             ((_("fmt_opt", _("L_batch"), opts["batch"], st), "t_batch")),
+             ((_("fmt_opt", _("L_jobs"), opts["jobs"], st), "t_jobs")),
              ])
         if r is None:
             return
@@ -191,7 +211,7 @@ def action_page(url: str, opts: dict):
             continue
         if r == "t_proxy":
             try:
-                opts["proxy"] = input("代理URL(空=清除): ").strip()
+                opts["proxy"] = input(_("p_proxy")).strip()
             except (EOFError, KeyboardInterrupt):
                 pass
             continue
@@ -202,7 +222,7 @@ def action_page(url: str, opts: dict):
             continue
         if r == "t_spoofref":
             try:
-                opts["spoof_referer"] = input("伪装Referer(空=清除): ").strip()
+                opts["spoof_referer"] = input(_("p_spoofref")).strip()
             except (EOFError, KeyboardInterrupt):
                 pass
             continue
@@ -218,19 +238,19 @@ def action_page(url: str, opts: dict):
             continue
         if r == "t_textpx":
             try:
-                opts["text_proxy"] = input("文本代理前缀(空=清除): ").strip()
+                opts["text_proxy"] = input(_("p_textpx")).strip()
             except (EOFError, KeyboardInterrupt):
                 pass
             continue
         if r == "t_hlskey":
             try:
-                opts["hls_key"] = input("HLS密钥 URI[,IV](空=清除): ").strip()
+                opts["hls_key"] = input(_("p_hlskey")).strip()
             except (EOFError, KeyboardInterrupt):
                 pass
             continue
         if r == "t_column":
             try:
-                opts["column"] = input("栏目子串(空=清除): ").strip()
+                opts["column"] = input(_("p_column")).strip()
             except (EOFError, KeyboardInterrupt):
                 pass
             continue
@@ -245,32 +265,42 @@ def action_page(url: str, opts: dict):
             continue
         if r == "t_repin":
             try:
-                _yn = input("确认站方换证合法？输入 YES 重钉：").strip()
+                _yn = input(_("p_repin")).strip()
             except (EOFError, KeyboardInterrupt):
                 continue
             if _yn != "YES":
-                print("已取消")
+                print(_("p_cancelled"))
                 continue
             _cmd = build_cmd("check", url, opts) + ["--repin"]
             run_cmd(_cmd)
             continue
         if r == "replay":
             try:
-                _yn = input("☠ 确认目标为自有/已授权站？只发GET。输入 YES 继续：").strip()
+                _yn = input(_("p_replay")).strip()
             except (EOFError, KeyboardInterrupt):
                 continue
             if _yn != "YES":
-                print("已取消")
+                print(_("p_cancelled"))
                 continue
+        if r == "t_learn":
+            opts["learn"] = not opts.get("learn", True)
+            continue
+        if r == "t_lang":
+            order = ["auto", "zh", "en"]
+            opts["lang"] = order[(order.index(opts.get("lang", "auto")) + 1)
+                                 % len(order)] \
+                if opts.get("lang", "auto") in order else "auto"
+            set_lang(opts["lang"])
+            continue
         if r == "t_batch":
             try:
-                opts["batch"] = max(1, int(input("每轮页数: ").strip()))
+                opts["batch"] = max(1, int(input(_("p_batch")).strip()))
             except (EOFError, KeyboardInterrupt, ValueError):
                 pass
             continue
         if r == "t_jobs":
             try:
-                opts["jobs"] = max(1, min(8, int(input("下载并发1-8: ").strip())))
+                opts["jobs"] = max(1, min(8, int(input(_("p_jobs")).strip())))
             except (EOFError, KeyboardInterrupt, ValueError):
                 pass
             continue
@@ -289,18 +319,18 @@ def site_page(opts: dict):
         items = []
         for s in sites:
             files, total, rows = site_stats(os.path.join(sdir, s))
-            items.append(("%s (文件%d %s)" % (s, files, fmt_size(total)), s))
-        items.append(("＋ 新网址", "__new__"))
-        r = pick("站点 (共%d)" % len(sites), items)
+            items.append((_("fmt_site", s, files, fmt_size(total)), s))
+        items.append((_("p_newsite"), "__new__"))
+        r = pick(_("p_sites", len(sites)), items)
         if r is None:
             return
         if r == "__new__":
             try:
-                u = input("网址(https://…): ").strip()
+                u = input(_("p_newurl")).strip()
             except (EOFError, KeyboardInterrupt):
                 continue
             if not u.startswith(("http://", "https://")):
-                print("URL 必须以 http(s):// 开头")
+                print(_("p_urlerr"))
                 continue
             action_page(u, opts)
         else:
@@ -308,12 +338,22 @@ def site_page(opts: dict):
 
 
 def main() -> int:
+    lang = "auto"
+    try:
+        for i, a in enumerate(sys.argv):
+            if a == "--lang" and i + 1 < len(sys.argv):
+                lang = sys.argv[i + 1]
+    except Exception:
+        pass
+    set_lang(lang)
+    import site_crawler as _sc
+    ver = getattr(_sc, "__version__", "?")
     opts = {"cdn": True, "http": False, "batch": 60, "proxy": "", "column": "",
             "video": True, "jobs": 3, "insecure": False, "browser": "",
             "clone": False, "spoof": "", "spoof_referer": "", "snapshot": "",
             "softwall": "", "text_proxy": "", "hls_key": "", "lock": False,
-            "hijack": False}
-    print("auto_site_dl TUI v1.7.0 (q 返回, Ctrl+C 停止任务)")
+            "hijack": False, "learn": True, "lang": lang}
+    print(_("tui_title", ver))
     site_page(opts)
     return 0
 

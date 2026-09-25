@@ -65,6 +65,8 @@ python -u -X utf8 site_crawler.py purge https://example.com/
 | `--hls-key URI[,IV]` | HLS 密钥透传（N_m3u8DL-RE/yt-dlp 生效，ffmpeg 跳过） |
 | `--lock-session` | 会话独占锁（防并发写 cookies.txt） |
 | `--hijack-check` / `--repin` | 劫持检测：TOFU 证书钉扎（默认关）/ 人工确认后重钉 |
+| `--lang auto\|zh\|en` | 语言（默认 auto=系统语言，取不到回英语；TUI 已双语） |
+| `--no-learn` | 关闭自我学习（不读写 learn.json） |
 
 ## 目录结构
 
@@ -73,7 +75,7 @@ auto-site-dl/
 ├── site_crawler.py       主程序（模式入口 + 安全基座 + 下载引擎链）
 ├── watchflow.py          视频深层流程（取流状态机 + 并行下载池）
 ├── tui.py                终端交互 UI
-├── tests/test_security.py 安全回归（红队自审，351 项，纯本地零网络）
+├── tests/test_security.py 安全回归（红队自审，368 项，纯本地零网络）
 ├── requirements.txt
 ├── MANUAL.md             操作手册
 ├── LICENSE               Apache-2.0
@@ -99,11 +101,14 @@ auto-site-dl/
 - **声明式扩展 v1.6.0**：`config.json/rules` 三选择器白名单（version 钉死，不加载任意 `.py`）；envcheck 完整性自检；研究依据见 MANUAL §12
 - **攻击侧自测 v1.7.0（默认全关，仅自有/授权站，TUI 需输入 YES）**：`replay` cookie 重放自测（只读 GET：匿名 vs 带券 vs 换身份，报告会话绑定情况）；`--hijack-check` TOFU 证书钉扎（首钉信任、变更只告警不阻断、`--repin` 人工确认后加钉）。**AV 免杀不做**（纯 malware tradecraft，与开源可审计立场冲突；对应需求由完整性自检 + AV 信任区覆盖）
 - **运维安全**：日志 URL 只到 path、Cookie/代理凭证永不打印、代理开工前预检、导航错误 11 类诊断、robots 默认遵守
+- **自我学习 v1.8.0（有限制，见 MANUAL §14）**：本站 `learn.json` 自适应延迟（拥塞+0.5s/上限10s）+ 引擎命中榜 + 挑战记忆；无外发、不存敏感物、schema 夹紧、`--no-learn` 一键关
+- **更新检查 v1.8.0**：`updatecheck` 只问 GitHub releases 最新 tag 并通知，永不自动下载/执行
+- **i18n v1.8.0**：`i18n.py` 系统语言探测（仅 zh 回中文，其余/失败回英语），TUI 已全量双语，`--lang` 直通引擎
 
 ## 维护
 
 ```powershell
-python -u -X utf8 tests\test_security.py   # 回归闸门：351 项全过，exit 0
+python -u -X utf8 tests\test_security.py   # 回归闸门：368 项全过，exit 0
 python -X utf8 -m py_compile site_crawler.py watchflow.py tui.py
 python -u -X utf8 site_crawler.py envcheck
 ```

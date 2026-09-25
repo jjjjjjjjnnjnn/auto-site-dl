@@ -1198,6 +1198,58 @@ except Exception:
     pass
 atk("replay-no-session", C.cmd_replay(sW3) == 3)
 
+print("[X] 自我学习限制 + i18n")
+import i18n as I18N  # noqa: E402
+atk("i18n-keys-equal", set(I18N.STRINGS["zh"].keys()) == set(I18N.STRINGS["en"].keys()))
+I18N.set_lang("en")
+atk("i18n-en", I18N._("m_dl") == "⬇ Download dl")
+I18N.set_lang("zh")
+atk("i18n-zh", I18N._("m_dl") == "⬇ 下载 dl")
+atk("i18n-fallback", I18N._("no_such_key_qqq") == "no_such_key_qqq")
+atk("i18n-resolve-bad", I18N.resolve_lang("fr") == "en")
+atk("i18n-detect-shape", I18N.detect_system_lang() in ("zh", "en"))
+I18N.set_lang("auto")
+sX = C.Site("https://example.invalid/", NS())
+atk("learn-default-on", C.learn_on(sX) is True)
+atk("learn-killed",
+    C.learn_on(C.Site("https://example.invalid/", NS(no_learn=True))) is False)
+sX.cfg["learn"] = False
+atk("learn-cfg-off", C.learn_on(sX) is False)
+sX.cfg["learn"] = True
+_evil = {"version": 1, "delay": 9999, "engine_hits": {"a": 5, "K" * 40: 9},
+         "last_challenge": "challenge-x;rm", "fails_429": -3,
+         "url": "https://evil/", "cookie": "a=b"}
+_cl = C._clamp_learn(_evil)
+atk("learn-clamp", _cl["delay"] == 10.0 and _cl["fails_429"] == 0
+    and "K" * 40 not in _cl["engine_hits"]
+    and _cl["last_challenge"] == "" and "url" not in _cl and "cookie" not in _cl)
+atk("learn-ver-drop", C._clamp_learn({"version": 999})["delay"] == 1.2)
+with open(os.path.join(sX.root, "learn.json"), "w", encoding="utf-8") as _f:
+    _f.write('{"version": 1, "delay": "oops", "engine_hits": [1]}')
+atk("learn-load-evil", C.load_learn(sX)["delay"] == 1.2
+    and C.load_learn(sX)["engine_hits"] == {})
+sX.learn = {"version": 1, "delay": 2.5, "engine_hits": {}, "last_challenge": "",
+            "fails_429": 0, "updated": 0}
+sX.counters["retry_429"] = 7
+sX.counters["challenge-turnstile"] = 2
+C.save_learn(sX)
+_re = C.load_learn(sX)
+atk("learn-save", _re["delay"] == 2.5 and _re["fails_429"] == 7
+    and _re["last_challenge"] == "challenge-turnstile" and _re["updated"] > 0)
+C.learn_hit(sX, "ytdlp")
+C.learn_hit(sX, "")
+atk("learn-hit", sX.learn["engine_hits"].get("ytdlp") == 1)
+sX2 = C.Site("https://example.invalid/", NS(no_learn=True))
+sX2.learn = {"version": 1, "delay": 5.0, "engine_hits": {}, "last_challenge": "",
+             "fails_429": 0, "updated": 0}
+C.save_learn(sX2)
+atk("learn-nosave", C.load_learn(sX2)["delay"] == 2.5)
+sX.note_congestion()
+atk("learn-nudge", sX.learn["delay"] == 3.0)
+atk("ver-cmp", C._ver_cmp("v1.10.0", "1.9.9") == 1
+    and C._ver_cmp("1.7.0", "1.7.0") == 0
+    and C._ver_cmp("1.6", "1.7.0") == -1)
+
 print("\nREDTEAM: %d 项全部守住" % N)
 for x in (s, s2, s2h, s2v, s2i, s6, s7, s7b, s8, s_col, s_ns, s9, _sg,
           sA, sB, sC, sD, sD2, sE, sF, sF2, sG, sH, sT, sT2,
