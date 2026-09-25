@@ -195,3 +195,15 @@ python -u -X utf8 site_crawler.py envcheck
 
 - `sites/` 下的 `cookies.txt` 是会话凭证，不要外传、不要入库（`.gitignore` 已排除整个 `sites/`）
 - 换机器：拷走 `sites/<域名>/cookies.txt` + `inventory.csv` 即可续传
+
+---
+
+## 8. Round2 安全加固说明（v1.2.0+）
+
+- **守卫式下载**：不再让库自动跟跳转，手动逐跳（≤5）+ 每跳主机 SSRF 守卫 + 落定 URL 复检白名单；直连时做连接后对端 IP 复检（闭合 DNS 重绑定窗口，代理场景豁免）；429/5xx 指数退避重试（服从 Retry-After≤60s）
+- **m3u8 播放列表守卫**：先自取文本，`EXT-X-KEY` 与绝对分片地址逐条过 SSRF 守卫再交引擎；传给 yt-dlp/ffmpeg 前 URL 必须 `http(s)://`（防 URL 即选项）
+- **指纹对齐**：UA 大版本→curl_cffi preset 自动对齐（chrome136/131/124/120/116），老指纹配新 UA 会被直接判脚本
+- **网络层捕获**：dl 模式监听 response，播放器 JS 动态拉的流也能收下
+- **记账与日志**：CSV 防注入全集（含全角/前导空白/BOM/竖线）；日志恒单行；导航文本去换行分隔符；cookie 临时文件过滤注入行 + 0600 权限 + 用完即删
+- **代理**：保留认证信息（user:pass@）、IPv6 方括号；Crawl-delay 自动抬高限速下限
+- 回归闸门：`tests/test_security.py` 135 项，详见仓库
