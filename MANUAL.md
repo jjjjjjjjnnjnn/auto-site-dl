@@ -55,9 +55,20 @@ python -u -X utf8 tui.py
 | 克隆profile | 关 | 开=克隆本机 Chrome profile（需先人工打开过目标站） |
 | 中转代理 | 无 | 填 `http://`/`socks5h://host:port` |
 | 栏目过滤 | 无 | 只爬 URL 含该子串的栏目 |
+| 伪装 | off | 循环切：off→googlebot→bingbot→mobile |
+| 伪装Referer | 无 | 只收 http(s) |
+| 快照 | off | 循环切：off→wayback→archive→auto |
+| 干预 | off | 循环切：off→strip→reader |
+| 文本代理 | 无 | 通用前缀，不内置第三方 |
+| HLS密钥 | 无 | `URI[,IV]` 透传 |
 | 视频优先 | 开 | 关=图片视频全下 |
+| 会话独占锁 | 关 | 防并发写 cookies.txt |
+| 劫持检测 | 关 | TOFU 证书钉扎 |
+| 证书重钉 | — | 跑 check + `--repin`（需输入 YES） |
+| 自学习 | 开 | 关=不读写 learn.json |
+| 语言 | auto | 循环切：auto→zh→en |
 | 每轮页数 | 60 | dl/auto 上限 |
-| 下载并发 | 3 | 仅 watch 生效（1–8） |
+| 下载并发 | 3 | watch/dl 均生效（1–8；dl 默认 3 归一为串行，显式改 N 才并发） |
 
 ---
 
@@ -239,9 +250,10 @@ python -u -X utf8 site_crawler.py dl https://example.com/ 60 --allow-cdn --no-vi
 
 ```powershell
 python -u -X utf8 tests\test_security.py   # 回归：368 项全过 exit 0（改代码必跑）
-python -X utf8 -m py_compile site_crawler.py watchflow.py tui.py
+python -X utf8 -m py_compile site_crawler.py watchflow.py tui.py i18n.py
 python -u -X utf8 site_crawler.py envcheck
 python -u -X utf8 site_crawler.py verify https://example.com/   # 离线自证下载物
+python -u -X utf8 site_crawler.py updatecheck   # 只通知新版本，永不自动下载
 curl-cffi update   # 指纹保鲜：拉最新 TLS preset（免费档含 Chrome/Safari/Firefox）
 ```
 

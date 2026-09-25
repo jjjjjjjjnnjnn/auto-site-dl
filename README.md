@@ -24,7 +24,7 @@ python -u -X utf8 tui.py                      # 终端交互 UI（推荐入口�
 
 ## 两种用法
 
-**TUI（`tui.py`，纯标准库）**：站点页 → 操作页（auto/check/wait/dl/watch/nav/purge/envcheck + 8 组开关）→ 前台运行，Ctrl+C 停止。
+**TUI（`tui.py`，纯标准库）**：站点页 → 操作页（11 种模式 auto/check/wait/dl/watch/nav/purge/verify/replay/envcheck/updatecheck + 20 组开关，危险区需输入 YES）→ 前台运行，Ctrl+C 停止。`python -u -X utf8 tui.py --lang en` 切英语。
 
 **命令行**：
 
@@ -74,7 +74,8 @@ python -u -X utf8 site_crawler.py purge https://example.com/
 auto-site-dl/
 ├── site_crawler.py       主程序（模式入口 + 安全基座 + 下载引擎链）
 ├── watchflow.py          视频深层流程（取流状态机 + 并行下载池）
-├── tui.py                终端交互 UI
+├── tui.py                终端交互 UI（中英双语）
+├── i18n.py               语言探测与译表（纯标准库）
 ├── tests/test_security.py 安全回归（红队自审，368 项，纯本地零网络）
 ├── requirements.txt
 ├── MANUAL.md             操作手册
@@ -84,6 +85,8 @@ auto-site-dl/
     ├── profile/          独立浏览器 profile
     ├── inventory.csv     记账：url,file,bytes,sha256,source
     ├── cookies.txt       会话凭证（敏感，勿外传）
+    ├── certpin.txt       证书钉扎集合（hijack-check 用）
+    ├── learn.json        学习档案（延迟/引擎榜/挑战记忆，无敏感物）
     └── crawl.log         运行日志（URL 已脱敏到 path）
 ```
 
@@ -109,7 +112,7 @@ auto-site-dl/
 
 ```powershell
 python -u -X utf8 tests\test_security.py   # 回归闸门：368 项全过，exit 0
-python -X utf8 -m py_compile site_crawler.py watchflow.py tui.py
+python -X utf8 -m py_compile site_crawler.py watchflow.py tui.py i18n.py
 python -u -X utf8 site_crawler.py envcheck
 ```
 
