@@ -92,8 +92,13 @@ def _click_cover(page, C, site) -> bool:
             return True
     except Exception:
         pass
-    for sel in ("[class*=play-btn]", "[class*=playBtn]", "[class*=big-play]",
-                ".vjs-big-play-button", "[id*=playBtn]"):
+    try:
+        _rsel = C.site_rules(site).get("watch_button_selector") or []
+    except Exception:
+        _rsel = []
+    for sel in (list(_rsel) + ["[class*=play-btn]", "[class*=playBtn]",
+                               "[class*=big-play]", ".vjs-big-play-button",
+                               "[id*=playBtn]"]):
         try:
             el = page.query_selector(sel)
             if el and C.human_click(page, el, timeout=3000):

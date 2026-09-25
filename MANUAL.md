@@ -1,6 +1,6 @@
 # 操作手册（MANUAL）
 
-对应版本：v1.5.0 ｜ 适用系统：Windows 10/11（PowerShell）｜ Python ≥ 3.9
+对应版本：v1.6.0 ｜ 适用系统：Windows 10/11（PowerShell）｜ Python ≥ 3.9
 
 ---
 
@@ -144,9 +144,12 @@ python -u -X utf8 site_crawler.py dl https://example.com/ 60 --allow-cdn --no-vi
   "lazy_rounds": 3,
   "browser": "camoufox",
   "clone_profile": "",
-  "extra_verify_selectors": [".my-captcha"]
+  "extra_verify_selectors": [".my-captcha"],
+  "rules": {"version": 1, "detail_link_selector": [".list a.detail"],
+            "next_page_selector": ["a.next"], "watch_button_selector": [".play-btn"]}
 }
 ```
+`rules` 为声明式扩展唯一入口（不加载任意 `.py`）：三键均为 CSS 选择器白名单（长度≤200，字符集 `[a-zA-Z0-9_.#\[\]=\\"':\-\s>]`，非法逐条丢弃，超 20 条截断）；`version!=1` 整节丢弃并 WARNING；命中时 `discover_nav/find_next/watch_one` 优先用规则，无命中回退原逻辑。
 
 `proxies` ≥ 2 条时自动进入轮换池：每次出口随机且不与上次重复，单代理连败 3 次熔断 10 分钟并自动故障转移，浏览器上下文粘滞、下载逐次轮换。开工打匿名简报：L0直连（暴露）/L1单代理/L2轮换池；每次运行身份束（UA+视口+指纹+出口）全换。`socks5://` 会提示 DNS 泄漏风险，请用 `socks5h://`。
 
@@ -235,9 +238,10 @@ python -u -X utf8 site_crawler.py dl https://example.com/ 60 --allow-cdn --no-vi
 ## 7. 日常维护
 
 ```powershell
-python -u -X utf8 tests\test_security.py   # 回归：310 项全过 exit 0（改代码必跑）
+python -u -X utf8 tests\test_security.py   # 回归：339 项全过 exit 0（改代码必跑）
 python -X utf8 -m py_compile site_crawler.py watchflow.py tui.py
 python -u -X utf8 site_crawler.py envcheck
+python -u -X utf8 site_crawler.py verify https://example.com/   # 离线自证下载物
 curl-cffi update   # 指纹保鲜：拉最新 TLS preset（免费档含 Chrome/Safari/Firefox）
 ```
 
@@ -332,4 +336,34 @@ python -u -X utf8 site_crawler.py check https://example.com/ `
 - 代理主机走全套守卫，返回页复用快照正文判定；日志只记数字，目标 query 零落盘（回归锁定）
 - check 遇验证时报"文本代理可用(约N KB)"情报，原站仍走 `wait` 验证
 
-- 回归闸门：`tests/test_security.py` 266 项（[K]伪装12 + [L]快照11 + [M]干预7 + [N]代理8）
+---
+
+## 12. 论文与真实案例研究（v1.6.0 设计依据）
+
+本节把 v1.6.0 每个加固点的学术/实战出处写死，防"拍脑袋安全"。仅自有/授权内容研究测试。
+
+### 12.1 TLS 指纹：单信号弱，组合+保鲜才是解
+
+- **Matousek 等，ICDF2C 2020《On Reliability of JA3 Hashes》**：JA3 单用只能唯一识别 33% 应用；JA3+JA3S+SNI 组合到 91.7%。结论：任何单指纹（TLS 或 UA）都不够看，必须多层组合 + 指纹库随版本更新。→ 对应我们的 UA+TLS preset+头一致性三件套，以及 `curl-cffi update` 保鲜制度。
+- **Heino 等，IEEE CSR 2022**：主张用 JA3 预哈希串替代 MD5（近似匹配+可解释）。→ 对应我们钉版本名（`chrome150`）而不是哈希比对；`verify_lock` 钉死已装版本。
+- **McGrew 等，arXiv:2009.01939（Mercury）**：加入目标上下文（IP/端口/SNI）后进程识别 F1>0.99。→ 对应 Host 作用域 `extra_headers`、sticky 出口、locale/时区随代理走的"目标上下文一致"思想。
+
+### 12.2 藏匿军备赛：JS 注入必被看穿，C++ 层+会话稳定才是正道
+
+- **Mowery & Shacham 2012《Pixel Perfect》**：朴素随机噪声可被均值攻击抹掉；彻底防御要么统一渲染要么弹权限框。→ 对应我们：拟人抖动用截断正态（非机械均匀），且身份束会话内稳定（不做每请求换 UA 这种自杀式"随机"）。
+- **Nguyen & Vadrevu 2025《Breaking the Shield》**：当前无完全可部署的 canvas 防御；随机化必须同时"不可预测+不可逆"。→ 对应贝塞尔 `run_id` 会话种子 + 落点框内随机；也对应已知限制里"不保证 100%"的诚实写法。
+- **Acar 等，CCS 2014《The Web Never Forgets》**：军备赛定调之作。→ 我们选 Camoufox（C++ 层）而非加 stealth 插件，正是此结论的工程版。
+- **FP-Radar，PETS 2022**：反制平均滞后滥用 1–7 年。→ 预设表必须滚动刷新，不能写死（v1.5.0 教训）。
+
+### 12.3 HLS/Token 真实案例：按请求授权必被自动化打穿
+
+- **2026-01 token-refresh 滥用案例**：预览 token 可无限刷新 + CDN 只验 URL 不验会话 → 整片被增量拖走。教训：授权必须绑会话/计数；威胁模型必须按自动化假设。→ 对应 token-fastpath（取到即下）、query 透传不断链。
+- **2026-06 某 OTT 20 漏洞审计**：DRM 许可证端点无鉴权、通配符 CDN token、JS 内硬编码 AES key、长会话 cookie。→ 对应 KEY 分离守卫（manifest/key/segment 三处各查）、`--hls-key` 只透传不提取、会话 TTL、`--lock-session`。
+- **Hydrolix 2025 防盗链复盘**：一家 broadcaster 50%+ 流量来自非法 Referer；token 复用+UA 异常是核心信号。→ 对应 Referer 自动兜底 + `CHALLENGE` 分类日志 + counters 可观测。
+
+### 12.4 会话劫持：Bearer 必被盗，只能缩窗口+绑环境
+
+- **OWASP Cookie Theft / Session Management 系列 + MITRE T1539**：session cookie 本质是 bearer token；Evilginx2 类 AiTM 专偷；缓解=短 TTL + Secure/HttpOnly/__Host- + 环境绑定 + 失窃后重认证。→ 对应 cookies.txt 0600 + 删前覆写 + 会话 TTL + 权限 WARNING + 独占锁（客户端能做的全做了）。
+- 对应红线：我们不碰服务端会话、不做 cookie 重放测试——`verify` 只验本地下载物，不验任何凭证有效性。
+
+- 回归闸门：`tests/test_security.py` 339 项（[S]纵深7 + [T]反劫持5 + [U]藏匿效率与规则17）

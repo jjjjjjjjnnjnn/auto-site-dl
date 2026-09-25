@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 jjjjjjjjnnjnn
-"""通用站点媒体下载器 v1.5.0: 填网址 -> 检测人机验证 -> 需验证弹窗等人工 -> 自动全站下载.
+"""通用站点媒体下载器 v1.6.0: 填网址 -> 检测人机验证 -> 需验证弹窗等人工 -> 自动全站下载.
 
 用法 (python -u -X utf8 site_crawler.py ...):
   check <url>              只检测: 该站是否需要人机验证 (不下载, 不存页面内容)
@@ -12,6 +12,7 @@
   watch <url> [batch]      深层: 点视频->点观看->等加载->下真流 (见 watchflow.py)
   nav <url>                栏目测绘: 导航区清单 columns.txt + 分页器试探
   purge <url>              清扫: 补/纠正扩展名, 隔离非媒体到 rejected/(纯本地, 不联网)
+  verify <url>             自证: 按 inventory.csv 重算 sha256(纯本地, 不联网)
   envcheck [url]           环境自检: 依赖/浏览器/引擎 (纯本地, 不碰目标站)
 
 选项 (加在末尾):
@@ -23,6 +24,7 @@
   --browser CH             浏览器通道 camoufox(推荐, C++层指纹)/chrome/edge/默认chromium
   --clone-profile PATH     克隆真实浏览器profile(Torch思路, 只读源, 隔离副本)
   --column SUB             只爬URL含该子串的栏目
+  --lock-session           会话独占锁(防他进程并发写cookies.txt)
   --spoof MODE             请求伪装: googlebot/bingbot/mobile(默认off);
                              bot类强制requests+告警, mobile同步移动视口与头
   --spoof-referer URL      伪装Referer(只收http(s), 非法值丢弃)
@@ -78,7 +80,7 @@ from urllib import robotparser
 
 import requests
 
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 
 # ---------------------------------------------------------------- 身份池
 UA_POOL = [
@@ -149,6 +151,14 @@ MEDIA_SUFFIXES = IMG_SUFFIXES | VID_SUFFIXES | STREAM_SUFFIXES
 AD_KEYWORDS = ["advert", "preroll", "doubleclick", "googlesyndication",
                "popads", "adserver", "tracking"]
 _TOKEN_Q_RE = re.compile(r"[?&](token|expires?|sign|auth|sig|deadline)=", re.I)
+
+
+def _chmod_0600(path: str) -> None:
+    """敏感文件 0600：posix 生效；Windows os.chmod 尽力 + try 包裹永不抛."""
+    try:
+        os.chmod(path, 0o600)
+    except Exception:
+        pass
 
 NAV_HINTS = [
     ("ERR_CERT_AUTHORITY_INVALID",
@@ -267,6 +277,92 @@ def _cfg_list(v):
     return []
 
 
+RULES_VERSION = 1
+_RULE_SEL_RE = re.compile("^[a-zA-Z0-9_.#\\[\\]=\\\"':\\-\\s>]+$")
+
+
+def _sanitize_rule_selectors(v):
+    """rules 选择器白名单: 仅 CSS 子集, 长度<=200, 非法逐条丢弃."""
+    if isinstance(v, str):
+        v = [v]
+    if not isinstance(v, (list, tuple)):
+        return []
+    out = []
+    for x in v:
+        try:
+            s = str(x).strip()
+        except Exception:
+            continue
+        if not s or len(s) > 200:
+            continue
+        if not _RULE_SEL_RE.match(s):
+            continue
+        out.append(s)
+    return out[:20]
+
+
+def site_rules(site):
+    """声明式站点规则(安全子集): cfg['rules'] 必须是 dict 且 version==1.
+
+    键: detail_link_selector / next_page_selector / watch_button_selector.
+    值: CSS 选择器字符串白名单. version 错配则整节丢弃并 WARNING.
+    """
+    try:
+        raw = site.cfg.get("rules")
+    except Exception:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    try:
+        ver = raw.get("version")
+    except Exception:
+        return {}
+    if ver != RULES_VERSION:
+        try:
+            site.log("WARNING rules 版本错配(要1得%s): 整节丢弃" % (ver,))
+        except Exception:
+            pass
+        return {}
+    out = {}
+    try:
+        for k in ("detail_link_selector", "next_page_selector",
+                  "watch_button_selector"):
+            out[k] = _sanitize_rule_selectors(raw.get(k, []))
+    except Exception:
+        return {}
+    return out
+
+
+KNOWN_CFG_KEYS = frozenset([
+    "delay", "batch", "browser", "clone_profile", "column", "video_first",
+    "allow_cdn", "allow_http", "insecure", "proxy", "proxies",
+    "proxy_sticky", "proxy_sticky_ttl", "proxy_trusted",
+    "locale", "timezone_id", "lazy_rounds", "extra_verify_selectors",
+    "extra_headers", "ad_keywords", "session_ttl_h", "hls_key",
+    "snapshot", "softwall", "text_proxy", "spoof", "spoof_referer",
+    "tls_spoof", "rules",
+])
+
+
+def _validate_config_dict(raw):
+    """轻量校验: 未知键->warnings; 类型错->warnings+安全回落. 不执行任何签名脚本."""
+    warnings = []
+    if not isinstance(raw, dict):
+        return {}, ["config 非 dict 已清空"]
+    for k in sorted(raw.keys()):
+        if k not in KNOWN_CFG_KEYS:
+            warnings.append("未知配置键忽略: %s" % k)
+    for k in ("proxies", "proxy_trusted", "extra_verify_selectors", "ad_keywords"):
+        if k in raw and raw[k] is not None and not isinstance(raw[k], (list, tuple, str)):
+            warnings.append("类型错误 %s 须 list/str, 已忽略" % k)
+            raw[k] = []
+    for k in ("extra_headers", "rules"):
+        if k in raw and raw[k] is not None and not isinstance(raw[k], dict):
+            warnings.append("类型错误 %s 须 dict, 已忽略" % k)
+            raw[k] = {}
+    return raw, warnings
+
+
 def url_for_log(url: str) -> str:
     """日志脱敏: 只到 path, query/fragment 永不落盘."""
     try:
@@ -278,10 +374,45 @@ def url_for_log(url: str) -> str:
 
 
 def _resolve_ips(host: str):
+    """DNS 进程内缓存 TTL 60s: 只缓存成功公网结果, 失败/私网不留存(防投毒)."""
     try:
-        return sorted({r[4][0] for r in socket.getaddrinfo(host, None)})
+        _hk = (host or "").strip().lower().rstrip(".")
     except Exception:
         return []
+    if _hk:
+        try:
+            _ts, _ips = _DNS_CACHE.get(_hk, (0.0, []))
+            if _ips and time.time() - _ts < _DNS_TTL:
+                return list(_ips)
+        except Exception:
+            pass
+    try:
+        ips = sorted({r[4][0] for r in socket.getaddrinfo(host, None)})
+    except Exception:
+        return []
+    if not ips:
+        return []
+    try:
+        _all_pub = True
+        for _ip in ips:
+            try:
+                _a = ipaddress.ip_address(_ip)
+            except ValueError:
+                _all_pub = False
+                break
+            if (_a.is_private or _a.is_loopback or _a.is_link_local
+                    or _a.is_multicast or _a.is_reserved or _a.is_unspecified):
+                _all_pub = False
+                break
+        if _all_pub and _hk:
+            _DNS_CACHE[_hk] = (time.time(), list(ips))
+    except Exception:
+        pass
+    return ips
+
+
+_DNS_CACHE = {}
+_DNS_TTL = 60.0
 
 
 def is_public_host(host: str) -> bool:
@@ -378,7 +509,12 @@ def polite_sleep(site, base=None) -> None:
         site.delay_mult = max(1.0, mult * 0.99)
     except Exception:
         mult = 1.0
-    time.sleep(max(0.2, t) * mult + random.random() * 0.8)
+    try:
+        _jit = random.gauss(0.4, 0.2)
+    except Exception:
+        _jit = 0.4
+    _jit = max(0.0, min(0.8, _jit))
+    time.sleep(max(0.2, t) * mult + _jit)
 
 
 def think(page, ms: int = 600) -> None:
@@ -575,6 +711,27 @@ def _locale_of(site):
     return loc, tz
 
 
+def _accept_language_of(site) -> str:
+    """requests 侧 Accept-Language: 与浏览器 locale 同源, 默认 zh-CN 不变.
+
+    规则: 主值=locale 原样; 次值=locale 主语言; 英文兜底 q=0.8.
+    非法 locale 回 zh-CN 全家桶. 只产 [A-Za-z-]+/q 值, 无注入面.
+    """
+    try:
+        loc = _cfg_str(site.cfg.get("locale")) or "zh-CN"
+    except Exception:
+        loc = "zh-CN"
+    if not re.fullmatch(r"[A-Za-z]{2,8}(?:-[A-Za-z0-9]{2,8})?", loc or ""):
+        loc = "zh-CN"
+    try:
+        primary = (loc or "zh-CN").split("-")[0].lower() or "zh"
+    except Exception:
+        primary = "zh"
+    if (loc or "").lower().startswith("en"):
+        return "%s,%s;q=0.9" % (loc, primary)
+    return "%s,%s;q=0.9,en;q=0.8" % (loc, primary)
+
+
 def _browser_guard(site, url: str) -> bool:
     """浏览器导航守卫: 目标主机必须公网可解析, 拦元数据/内网直连.
 
@@ -596,6 +753,17 @@ def _browser_guard(site, url: str) -> bool:
 
 def preflight(site) -> int:
     """开工预检: 代理已死直接拦下(返回2), 不带病空跑."""
+    try:
+        _check_session_perms(site)
+    except Exception:
+        pass
+    try:
+        if getattr(getattr(site, "args", None), "lock_session", False):
+            if not _take_session_lock(site):
+                site.log("SESSION-LOCKED 另一进程持有会话锁, 退出(防 cookies.txt 竞写劫持)")
+                return 2
+    except Exception:
+        pass
     p, origin = eff_proxy(site, "browser")
     if p and not proxy_alive(p):
         site.log("PROXY-DEAD 代理不可用(%s %s), 停止. 检查代理进程与端口."
@@ -628,6 +796,11 @@ class Site:
         self.colf = os.path.join(self.root, "columns.txt")
         for d in (self.root, self.dl, self.prof):
             os.makedirs(d, exist_ok=True)
+        try:
+            if os.path.isfile(self.ckf):
+                _chmod_0600(self.ckf)
+        except Exception:
+            pass
         self.cfg = {}
         try:
             cf = os.path.join(self.root, "config.json")
@@ -638,6 +811,20 @@ class Site:
             self.cfg = {}
         if not isinstance(self.cfg, dict):
             self.cfg = {}
+        try:
+            self.cfg, _cfg_warns = _validate_config_dict(self.cfg)
+            for _w in _cfg_warns:
+                try:
+                    print("WARNING " + _w, flush=True)
+                except Exception:
+                    pass
+                try:
+                    with open(self.logf, "a", encoding="utf-8") as _lf:
+                        _lf.write("WARNING " + _w + "\n")
+                except Exception:
+                    pass
+        except Exception:
+            pass
         self.proxy = getattr(args, "proxy", "") or ""
         self.counters = defaultdict(int)
         self.fails = []
@@ -1036,8 +1223,14 @@ class Site:
         self.counters[k] += n
 
     def note_fail(self, url: str, why: str) -> None:
+        try:  # why 自由文本可能回显全 URL(含 token): scrub 后再记
+            _w = re.sub(r"https?://[^\s'\"]+",
+                        lambda m: url_for_log(m.group(0)), str(why))
+            _w = _TOKEN_Q_RE.sub("?", _w)
+        except Exception:
+            _w = str(why)
         if len(self.fails) < 3:
-            self.fails.append("%s | %s" % (url_for_log(url), str(why)[:120]))
+            self.fails.append("%s | %s" % (url_for_log(url), _w[:120]))
         self.bump("fetch_fail")
 
     def summary(self) -> None:
@@ -1182,9 +1375,13 @@ def make_session(site):
         preset = SPOOF_PRESETS.get(sp, {})
     except Exception:
         preset = {}
+    try:
+        _al = _accept_language_of(site)
+    except Exception:
+        _al = "zh-CN,zh;q=0.9,en;q=0.8"
     headers = {
         "User-Agent": site.UA,
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Accept-Language": _al,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,"
                   "image/avif,image/webp,*/*;q=0.8",
         "Sec-CH-UA": _sec_ch_ua(site.UA),
@@ -1637,6 +1834,27 @@ def discover_nav(page, site):
     """栏目发现: 导航区链接, 跳过登录/付费/管理类. 返回 [(text, url)]."""
     out, seen = [], set()
     try:
+        _rsel = site_rules(site).get("detail_link_selector") or []
+    except Exception:
+        _rsel = []
+    for _sel in _rsel:
+        try:
+            for _el in (page.query_selector_all(_sel) or [])[:200]:
+                try:
+                    _h = _el.get_attribute("href") or ""
+                    _t = (_el.inner_text() or "").strip()[:24]
+                except Exception:
+                    continue
+                _u = norm_link(site, page.url, _h)
+                if not _u or _u in seen or not site.column_ok(_u):
+                    continue
+                seen.add(_u)
+                out.append((_clean_nav_text(_t) or "(无标题)", _u))
+        except Exception:
+            continue
+    if out:
+        return out
+    try:
         links = page.evaluate(
             "() => Array.from(document.querySelectorAll("
             "'header a[href], nav a[href], .nav a[href], .menu a[href]'))"
@@ -1654,6 +1872,20 @@ def discover_nav(page, site):
 
 def find_next(page, url: str) -> str:
     """分页器试探: rel=next 或 下一页文字."""
+    try:
+        _site = getattr(page, "_site_ref", None)
+        _nsel = site_rules(_site).get("next_page_selector") or [] if _site else []
+    except Exception:
+        _nsel = []
+    for _sel in _nsel:
+        try:
+            _el = page.query_selector(_sel)
+            if _el:
+                _u = norm_link_from(page, url, _el.get_attribute("href") or "")
+                if _u:
+                    return _u
+        except Exception:
+            continue
     try:
         el = page.query_selector("a[rel='next']")
         if el:
@@ -1803,16 +2035,17 @@ def _csv_safe(v) -> str:
     return s
 
 
-def record(site, url: str, path: str, source: str = "list") -> None:
+def record(site, url: str, path: str, source: str = "list", sha256: str = "") -> None:
     size = os.path.getsize(path) if os.path.isfile(path) else 0
     new = not os.path.isfile(site.invf)
     try:
+        digest = sha256 or hash_file(path)
         with open(site.invf, "a", encoding="utf-8-sig", newline="") as f:
             w = csv.writer(f)
             if new:
                 w.writerow(["url", "file", "bytes", "sha256", "source"])
             w.writerow([_csv_safe(url_for_log(url)), _csv_safe(os.path.basename(path)),
-                        size, hash_file(path), _csv_safe(source)])
+                        size, digest, _csv_safe(source)])
     except Exception:
         pass
     site.bump("downloaded")
@@ -1898,6 +2131,87 @@ def session_fresh(site):
     return age_h <= ttl, age_h
 
 
+def _perm_too_open(path: str) -> bool:
+    """会话/配置权限过宽嗅探(纯防御): posix 下组/其他可读写即 True; Windows/异常即 False."""
+    try:
+        st = os.stat(path)
+        return bool(st.st_mode & 0o077)
+    except Exception:
+        return False
+
+
+def _check_session_perms(site) -> None:
+    """启动时检查: ckf 过宽则 WARNING; profile 目录同理只 WARNING(不做 ACL)."""
+    try:
+        if os.path.isfile(site.ckf) and _perm_too_open(site.ckf):
+            site.log("WARNING 会话文件权限过宽(组/其他可读): %s 建议 chmod 600" % site.ckf)
+            site.bump("session-perm-open")
+    except Exception:
+        pass
+    try:
+        prof = getattr(site, "prof", "")
+        if prof and os.path.isdir(prof) and _perm_too_open(prof):
+            site.log("WARNING 浏览器 profile 目录权限过宽: %s 不做 ACL, 仅提示" % prof)
+            site.bump("profile-perm-open")
+    except Exception:
+        pass
+
+
+def _take_session_lock(site) -> bool:
+    """--lock-session 独占: sites/<host>/.session.lock O_CREAT|O_EXCL, 已存在即 False."""
+    try:
+        lock = os.path.join(site.root, ".session.lock")
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        try:
+            os.write(fd, str(os.getpid()).encode("utf-8", "ignore"))
+        finally:
+            os.close(fd)
+        return True
+    except FileExistsError:
+        return False
+    except Exception:
+        return True
+
+
+def _note_mitm(site, reason: str, url: str) -> None:
+    """MITM 异常信号: 只记账+单行日志, 永不阻断(防误杀)."""
+    try:
+        if site is not None:
+            site.bump("mitm-signal")
+            site.log("MITM-SIGNAL %s %s" % (reason, url_for_log(url)))
+    except Exception:
+        pass
+
+
+def _sec_fetch_for(url: str, referer: str, accept: str) -> dict:
+    """媒体子资源 Sec-Fetch 覆盖: 同站 same-origin, 跨站 cross-site.
+
+    Mode 恒 no-cors(子资源非导航); Dest 按 Accept 映射 video/image/empty.
+    同源判定用主机全等(子域视 cross-site, 偏保守但无指纹风险).
+    """
+    try:
+        th = (urlsplit(url).hostname or "").lower().rstrip(".")
+    except Exception:
+        th = ""
+    try:
+        rh = (urlsplit(referer or "").hostname or "").lower().rstrip(".")
+    except Exception:
+        rh = ""
+    sf_site = "same-origin" if (th and rh and th == rh) else "cross-site"
+    try:
+        a = (accept or "").lower()
+    except Exception:
+        a = ""
+    if a.startswith("video/"):
+        dest = "video"
+    elif a.startswith("image/"):
+        dest = "image"
+    else:
+        dest = "empty"
+    return {"Sec-Fetch-Site": sf_site, "Sec-Fetch-Mode": "no-cors",
+            "Sec-Fetch-Dest": dest}
+
+
 def _fetch_guarded(sess, url: str, referer: str, accept: str, max_hops: int = 5,
                    enforce_peer: bool = False, site=None):
     """守卫式 GET: 纯手动跟跳转, 每跳主机名 SSRF 守卫, 落定后对端复检(直连时).
@@ -1915,6 +2229,10 @@ def _fetch_guarded(sess, url: str, referer: str, accept: str, max_hops: int = 5,
             return None, cur, -1
         try:
             _hdrs = {"Referer": referer, "Accept": accept}
+            try:
+                _hdrs.update(_sec_fetch_for(cur, referer, accept))
+            except Exception:
+                pass
             try:
                 _h = (urlsplit(cur).hostname or "").lower().rstrip(".")
             except Exception:
@@ -1976,6 +2294,22 @@ def _fetch_guarded(sess, url: str, referer: str, accept: str, max_hops: int = 5,
             except Exception:
                 pass
             return None, cur, status
+        try:  # 响应头异常信号(只记不拦): 多 Set-Cookie 注入 / 超大 Content-Length
+            _raw_hdrs = getattr(getattr(r, "raw", None), "headers", None)
+            try:
+                _nset = len(_raw_hdrs.getlist("Set-Cookie")) if _raw_hdrs is not None else 0
+            except Exception:
+                _nset = 0
+            if _nset >= 4:
+                _note_mitm(site, "multi-set-cookie=%d" % _nset, cur)
+            try:
+                _cl = int((getattr(r, "headers", None) or {}).get("Content-Length") or 0)
+            except Exception:
+                _cl = 0
+            if _cl > 200 * 1048576:
+                _note_mitm(site, "content-length-huge=%d" % _cl, cur)
+        except Exception:
+            pass
         if not _proxied(sess) or enforce_peer:
             if not _peer_is_public(r):
                 try:
@@ -2350,31 +2684,97 @@ def fetch_one(site, sess, url: str, idx: int, referer: str, source: str = "list"
                 pass
             site.bump("skip_host")
             return ""
-        buf = b""
-        for chunk in r.iter_content(1 << 16):
-            buf += chunk
-            if len(buf) > 200 * (1 << 20):
-                break
+        CAP = 200 * (1 << 20)
+        stem = re.sub(r"[^\w\-]+", "_", urlsplit(url).path.rsplit("/", 1)[-1]
+                      .rsplit(".", 1)[0])[:80].strip("_") or "f"
+        tmp = os.path.join(site.dl, "%05d_%s.part" % (idx, stem))
+        h = hashlib.sha256()
+        total = 0
+        first = b""
+        ext = None
+        truncated = False
+        discard = False
         try:
-            r.close()
-        except Exception:
-            pass
-        if len(buf) < 512:
-            site.bump("skip_tiny")
-            return ""
-        ext = sniff_ext(buf[:64])
-        if not ext or ext == ".m3u8":
+            with open(tmp, "wb") as f:
+                for chunk in r.iter_content(1 << 16):
+                    if not chunk:
+                        continue
+                    if ext is None:
+                        if len(first) < 64:
+                            first += chunk[:max(0, 64 - len(first))]
+                        if len(first) >= 64:
+                            # 首块满 64B 即验魔数, 非媒体早弃省带宽
+                            ext = sniff_ext(first[:64])
+                            if not ext or ext == ".m3u8":
+                                discard = True
+                                break
+                    remain = CAP - total
+                    if remain <= 0:
+                        truncated = True
+                        break
+                    w = chunk[:remain]
+                    f.write(w)
+                    h.update(w)
+                    total += len(w)
+                    if total >= CAP:
+                        truncated = True
+                        break
+        finally:
+            try:
+                r.close()
+            except Exception:
+                pass
+        if discard:  # with 已退出(Windows 下开着的文件删不掉), 块外删
+            try:
+                if os.path.isfile(tmp):
+                    os.remove(tmp)
+            except Exception:
+                pass
+            site.bump("skip_magic_early")
             site.note_fail(url, "nomagic")
             site.bump("skip_nomagic")
             return ""
-        stem = re.sub(r"[^\w\-]+", "_", urlsplit(url).path.rsplit("/", 1)[-1]
-                      .rsplit(".", 1)[0])[:80].strip("_") or "f"
+        try:  # 声明与实收差一个量级(>10x 或 <0.1x)即信号, 不阻断
+            _decl = int((getattr(r, "headers", None) or {}).get("Content-Length") or 0)
+            if _decl > 0 and total > 0:
+                _ratio = total / float(_decl)
+                if _ratio > 10.0 or _ratio < 0.1:
+                    _note_mitm(site, "length-mismatch decl=%d got=%d" % (_decl, total), url)
+        except Exception:
+            pass
+        if total < 512:
+            try:
+                if os.path.isfile(tmp):
+                    os.remove(tmp)
+            except Exception:
+                pass
+            site.bump("skip_tiny")
+            return ""
+        if ext is None:
+            ext = sniff_ext(first[:64])
+        if not ext or ext == ".m3u8":
+            try:
+                if os.path.isfile(tmp):
+                    os.remove(tmp)
+            except Exception:
+                pass
+            site.note_fail(url, "nomagic")
+            site.bump("skip_nomagic")
+            return ""
         final = os.path.join(site.dl, "%05d_%s%s" % (idx, stem, ext))
-        tmp = final + ".part"
-        with open(tmp, "wb") as f:
-            f.write(buf)
-        os.replace(tmp, final)
-        record(site, url, final, source)
+        try:
+            os.replace(tmp, final)
+        except Exception:
+            try:
+                if os.path.isfile(tmp):
+                    os.remove(tmp)
+            except Exception:
+                pass
+            return ""
+        _chmod_0600(final)
+        if truncated:
+            site.bump("truncate")
+        record(site, url, final, source, sha256=h.hexdigest())
         try:
             site.report_proxy(_sess_proxy(sess), True)
         except Exception:
@@ -2408,10 +2808,7 @@ def _write_netscape(site, path: str) -> bool:
                     continue
                 f.write("%s\tTRUE\t/\tTRUE\t0\t%s\t%s\n"
                         % (site.host, k, v))
-        try:
-            os.chmod(path, 0o600)  # posix 下仅属主可读; Windows 下尽力
-        except Exception:
-            pass
+        _chmod_0600(path)
         return True
     except Exception:
         return False
@@ -2513,6 +2910,22 @@ def fetch_m3u8(site, url: str, idx: int, referer: str, sess=None):
     finally:
         try:
             if os.path.isfile(ck):
+                try:  # 删前覆写清内容(防取证残留, cookie 小文件一次写可接受)
+                    with open(ck, "r+b") as _f:
+                        try:
+                            _f.seek(0, 2)
+                            _len = _f.tell()
+                        except Exception:
+                            _len = 0
+                        try:
+                            _f.seek(0)
+                            _f.write(b"\x00" * min(_len, 1 << 20))
+                            _f.flush()
+                            os.fsync(_f.fileno())
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
                 os.remove(ck)
         except Exception:
             pass
@@ -2686,6 +3099,7 @@ def cmd_wait(site, timeout: int = 300) -> int:
                 with open(site.ckf, "w", encoding="utf-8") as f:
                     f.write("; ".join('%s=%s' % (c["name"], c["value"])
                                       for c in ctx.cookies()))
+                _chmod_0600(site.ckf)
             except Exception as e:
                 site.log("会话保存失败: %s" % str(e)[:100])
                 return 1
@@ -2697,7 +3111,7 @@ def cmd_wait(site, timeout: int = 300) -> int:
         close_ctx(pw, browser, ctx)
 
 
-def cmd_dl(site, batch: int = 60) -> int:
+def cmd_dl(site, batch: int = 60, dl_jobs: int = 1) -> int:
     site.log("TARGET=%s MODE=dl v%s" % (site.url, __version__))
     if preflight(site) == 2:
         return 2
@@ -2730,6 +3144,10 @@ def cmd_dl(site, batch: int = 60) -> int:
     except Exception as e:
         site.log("浏览器启动失败 诊断: " + diagnose_nav_error(str(e)))
         return 2
+    try:  # rules 回退用: find_next 经 _site_ref 拿 site(失败不影响主流程)
+        page._site_ref = site
+    except Exception:
+        pass
     idx = [_next_idx(site)]
     budget = [20]
     seen_page = set()
@@ -2760,16 +3178,59 @@ def cmd_dl(site, batch: int = 60) -> int:
                     media.append(u)
             net_cap.clear()
             media = sorted(set(media), key=lambda u: media_rank(u))
-            for u in media:
-                if u.lower().endswith(".m3u8"):
-                    if _TOKEN_Q_RE.search(u):
-                        site.log("token短命即时下: %s" % url_for_log(u))
-                    f = fetch_m3u8(site, u, idx[0], url)
-                else:
-                    f = fetch_one(site, sess, u, idx[0], url, "list")
-                if f:
-                    idx[0] += 1
-                polite_sleep(site, 0.4)
+            try:
+                _jobs_n = max(1, min(8, int(dl_jobs or 1)))
+            except Exception:
+                _jobs_n = 1
+            if _jobs_n <= 1:
+                for u in media:
+                    if u.lower().endswith(".m3u8"):
+                        if _TOKEN_Q_RE.search(u):
+                            site.log("token短命即时下: %s" % url_for_log(u))
+                        f = fetch_m3u8(site, u, idx[0], url)
+                    else:
+                        f = fetch_one(site, sess, u, idx[0], url, "list")
+                    if f:
+                        idx[0] += 1
+                    polite_sleep(site, 0.4)
+            else:  # 并发: 每 worker 独立会话(避开共享 sess 线程风险), 编号预取不断点
+                from concurrent.futures import ThreadPoolExecutor
+                from watchflow import LockedWriter as _DlLockedWriter
+                _lw = _DlLockedWriter(site)
+                _lw.idx[0] = idx[0]
+
+                def _dl_one(_u):
+                    _i = _lw.next_idx()
+                    try:
+                        _ss, _ = make_session(site)
+                    except Exception:
+                        _ss = sess
+                    try:
+                        if _u.lower().endswith(".m3u8"):
+                            return fetch_m3u8(site, _u, _i, url, _ss)
+                        return fetch_one(site, _ss, _u, _i, url, "list")
+                    finally:
+                        try:
+                            if _ss is not sess:
+                                _ss.close()
+                        except Exception:
+                            pass
+
+                with ThreadPoolExecutor(max_workers=_jobs_n) as _ex:
+                    _futs = [_ex.submit(_dl_one, _u) for _u in media]
+                    for _f in _futs:
+                        try:
+                            _f.result()
+                        except Exception:
+                            pass
+                        try:
+                            polite_sleep(site, 0.4)
+                        except Exception:
+                            pass
+                    try:  # 编号同步: worker 预取的最大值接回主计数, 跨页不断点不重号
+                        idx[0] = max(idx[0], _lw.idx[0])
+                    except Exception:
+                        pass
             if site._video_first():
                 _, reverify = deep_dive(page, site, sess, anchors, idx, budget)
                 if reverify:
@@ -2837,6 +3298,10 @@ def cmd_nav(site) -> int:
         pw, browser, ctx, page = open_ctx(site, True, p)
         if _goto(page, site, site.url):
             return 2
+        try:
+            page._site_ref = site
+        except Exception:
+            pass
         cols = discover_nav(page, site)
         lines = []
         for text, u in cols:
@@ -2927,6 +3392,66 @@ def cmd_purge(site) -> int:
     return 0
 
 
+def cmd_verify(site) -> int:
+    """离线自证(不联网): 按 inventory.csv 重算 sha256, 缺失/不符列出并记 verify-fail."""
+    site.log("TARGET=%s MODE=verify(本地)" % site.url)
+    rows = []
+    try:
+        with open(site.invf, encoding="utf-8-sig") as f:
+            rows = list(csv.DictReader(f))
+    except Exception:
+        site.log("VERIFY 无记账(inventory.csv 缺失)")
+        return 2
+    bad = 0
+    for r in rows:
+        try:
+            fn = (r.get("file", "") or "").strip()
+            want = (r.get("sha256", "") or "").strip().lower()
+        except Exception:
+            continue
+        if not fn:
+            continue
+        path = os.path.join(site.dl, os.path.basename(fn))
+        if not os.path.isfile(path):
+            site.log("VERIFY-MISS %s" % fn)
+            site.bump("verify-fail")
+            bad += 1
+            continue
+        got = hash_file(path).lower()
+        if not want or got != want:
+            site.log("VERIFY-BAD %s 期望=%s 实测=%s" % (fn, want[:16], got[:16]))
+            site.bump("verify-fail")
+            bad += 1
+    site.log("VERIFY 共%d行 异常%d" % (len(rows), bad))
+    return 1 if bad else 0
+
+
+def _integrity_selfcheck():
+    """完整性自检(轻量, 非 verify 替代): 入库 .py 的 LICENSE 头 + py_compile.
+
+    诚实注明: 不做 hash, 对抗不了投毒, 只防文件损坏/AV 啃坏/半截写入.
+    返回 (ok, note).
+    """
+    import py_compile
+    base = os.path.dirname(os.path.abspath(__file__))
+    files = ["site_crawler.py", "watchflow.py", "tui.py"]
+    bad = []
+    for name in files:
+        p = os.path.join(base, name)
+        try:
+            with open(p, encoding="utf-8") as f:
+                head = f.read(2048)
+            if "SPDX-License-Identifier" not in head:
+                bad.append(name + ":LICENSE头缺失")
+                continue
+            py_compile.compile(p, doraise=True)
+        except Exception as e:
+            bad.append("%s:%s" % (name, str(e)[:60]))
+    if bad:
+        return False, ";".join(bad)[:200]
+    return True, "3个.py头+编译通过(非hash, 防损坏/AV误杀, 不防投毒)"
+
+
 def cmd_envcheck(site=None) -> int:
     print("site_crawler v%s" % __version__)
     bad = []
@@ -2982,6 +3507,11 @@ def cmd_envcheck(site=None) -> int:
     rep("版本锁定", not drift,
         "与requirements.lock一致" if not drift else "漂移:%s" % ",".join(
             "%s(%s->%s)" % (a, b, c) for a, b, c in drift))
+    try:
+        _iok, _inote = _integrity_selfcheck()
+    except Exception:
+        _iok, _inote = False, "自检异常"
+    rep("完整性自检", _iok, _inote)
     st = tls_selftest()
     if st:
         cur = _pick_impersonate("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -3013,13 +3543,15 @@ def build_parser():
         description="通用站点媒体下载器 v%s: 填网址->检测验证->人工验证->自动下载" % __version__)
     ap.add_argument("mode", nargs="?", default="envcheck",
                     choices=["check", "wait", "dl", "auto", "diag", "watch",
-                             "nav", "purge", "envcheck"])
+                             "nav", "purge", "verify", "envcheck"])
     ap.add_argument("url", nargs="?", default="")
     ap.add_argument("batch", nargs="?", type=int, default=60)
     ap.add_argument("--allow-cdn", action="store_true")
     ap.add_argument("--allow-http", action="store_true")
     ap.add_argument("--proxy", default="")
     ap.add_argument("--insecure", action="store_true")
+    ap.add_argument("--lock-session", dest="lock_session", action="store_true",
+                    help="会话独占锁(防他进程并发写cookies.txt, 抢锁失败退出码2)")
     ap.add_argument("--browser", default="",
                     choices=["", "chromium", "chrome", "edge", "camoufox"],
                     help="浏览器通道: camoufox=C++层指纹(最强); chrome/edge=本机真实浏览器")
@@ -3031,7 +3563,7 @@ def build_parser():
     ap.add_argument("--no-video-first", dest="video_first", action="store_const",
                     const=False)
     ap.add_argument("--dl-jobs", type=int, default=3,
-                    help="watch下载并发1-8, 0=按CPU自动")
+                    help="下载并发1-8, 0=按CPU自动(watch默认3; dl默认串行1, 显式传值才并发)")
     ap.add_argument("--spoof", default="",
                     choices=["", "off", "googlebot", "bingbot", "mobile"],
                     help="请求伪装: googlebot/bingbot/mobile(默认off, 桌面池)")
@@ -3070,7 +3602,15 @@ def main(argv=None) -> int:
     if a.mode == "wait":
         return cmd_wait(site)
     if a.mode == "dl":
-        return cmd_dl(site, a.batch)
+        try:
+            _dlj = int(a.dl_jobs)
+        except Exception:
+            _dlj = 1
+        if _dlj == 3:
+            _dlj = 1
+        else:
+            _dlj = _auto_jobs(_dlj) if _dlj != 1 else 1
+        return cmd_dl(site, a.batch, _dlj)
     if a.mode == "auto":
         return cmd_auto(site, a.batch)
     if a.mode == "diag":
@@ -3079,6 +3619,8 @@ def main(argv=None) -> int:
         return cmd_nav(site)
     if a.mode == "purge":
         return cmd_purge(site)
+    if a.mode == "verify":
+        return cmd_verify(site)
     if a.mode == "watch":
         from watchflow import cmd_watch
         return cmd_watch(site, a.batch, _auto_jobs(a.dl_jobs))

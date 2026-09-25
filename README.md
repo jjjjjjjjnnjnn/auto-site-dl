@@ -63,6 +63,7 @@ python -u -X utf8 site_crawler.py purge https://example.com/
 | `--softwall strip\|reader` | 客户端干预：删遮罩/只计数（默认 off） |
 | `--text-proxy PREFIX` | 一站式文本代理前缀（通用，不内置第三方） |
 | `--hls-key URI[,IV]` | HLS 密钥透传（N_m3u8DL-RE/yt-dlp 生效，ffmpeg 跳过） |
+| `--lock-session` | 会话独占锁（防并发写 cookies.txt） |
 
 ## 目录结构
 
@@ -71,7 +72,7 @@ auto-site-dl/
 ├── site_crawler.py       主程序（模式入口 + 安全基座 + 下载引擎链）
 ├── watchflow.py          视频深层流程（取流状态机 + 并行下载池）
 ├── tui.py                终端交互 UI
-├── tests/test_security.py 安全回归（红队自审，310 项，纯本地零网络）
+├── tests/test_security.py 安全回归（红队自审，339 项，纯本地零网络）
 ├── requirements.txt
 ├── MANUAL.md             操作手册
 ├── LICENSE               Apache-2.0
@@ -92,12 +93,15 @@ auto-site-dl/
 - **指纹保鲜**：TLS preset 表跟踪 curl_cffi 实装（chrome150/android 真指纹，mobile 伪装已绑定 `chrome131_android`）；bot 类全球无 preset，仍强制 requests+告警。定期跑 `curl-cffi update` 保鲜指纹库
 - **防盗链与 token 流**：403/428 自动 Referer 兜底（目标 host 重试一次）；playlist 相对行同样过 SSRF 守卫且 token query 原样透传；token 短命 m3u8 优先即时下载；`extra_headers`（Host 作用域，仅 Referer/Origin）+ `--hls-key` 透传
 - **挑战分类**：403 现场判定 cf-challenge/turnstile/datadome/纯 403，给出对症动作（住宅 IP/换出口/wait 人工）
+- **纵深安全 v1.6.0**：cookies/netscape 0600 + 删前覆写；下载流式落盘（首块魔数早弃+边下边 hash）；`verify` 离线自证；config 未知键/类型校验；MITM 只记信号不阻断；why 文本 scrub
+- **藏匿一致 v1.6.0**：Accept-Language 随 locale；媒体请求 Sec-Fetch 修正（same-origin/cross-site + no-cors + Dest）；正态节奏抖动；DNS 缓存（只存公网）；dl 可选并发（默认串行）
+- **声明式扩展 v1.6.0**：`config.json/rules` 三选择器白名单（version 钉死，不加载任意 `.py`）；envcheck 完整性自检；研究依据见 MANUAL §12
 - **运维安全**：日志 URL 只到 path、Cookie/代理凭证永不打印、代理开工前预检、导航错误 11 类诊断、robots 默认遵守
 
 ## 维护
 
 ```powershell
-python -u -X utf8 tests\test_security.py   # 回归闸门：310 项全过，exit 0
+python -u -X utf8 tests\test_security.py   # 回归闸门：339 项全过，exit 0
 python -X utf8 -m py_compile site_crawler.py watchflow.py tui.py
 python -u -X utf8 site_crawler.py envcheck
 ```

@@ -9,8 +9,10 @@
 退出码 0 = 全部守住.
 """
 import argparse
+import hashlib
 import os
 import shutil
+import stat
 import sys
 import tempfile
 
@@ -949,6 +951,205 @@ atk("fastpath-head", _jobsQ[0][1] == "https://8.8.8.8/v/b.m3u8?token=abc"
 sQ2 = C.Site("https://example.invalid/", NS())
 sQ2.bump("token-fastpath")
 atk("fastpath-bump", sQ2.counters.get("token-fastpath", 0) == 1)
+
+print("[S] C1纵深安全/流式落盘")
+sS0 = C.Site("https://example.invalid/", NS())
+C._chmod_0600(sS0.ckf) if os.path.isfile(sS0.ckf) else None
+_tmpS = os.path.join(sS0.root, "perm_probe.txt")
+with open(_tmpS, "w", encoding="utf-8") as _f:
+    _f.write("x")
+C._chmod_0600(_tmpS)
+atk("chmod-survive", os.path.isfile(_tmpS))
+if os.name == "nt":
+    atk("chmod-win-bool", isinstance(C._perm_too_open(_tmpS), bool))
+else:
+    atk("chmod-600", stat.S_IMODE(os.stat(_tmpS).st_mode) == 0o600)
+    os.chmod(_tmpS, 0o644)
+    atk("perm-open", C._perm_too_open(_tmpS) is True)
+    os.chmod(_tmpS, 0o600)
+    atk("perm-closed", C._perm_too_open(_tmpS) is False)
+try:
+    os.remove(_tmpS)
+except Exception:
+    pass
+sS0.note_fail("https://example.invalid/x?token=SECRET9",
+              "ytdlp:https://cdn.invalid/v?token=SECRET9 err")
+atk("why-scrub", "SECRET9" not in sS0.fails[-1])
+
+
+class _StreamResp:
+    def __init__(self, chunks):
+        self._ch = list(chunks)
+        self.headers = {}
+        self.consumed = 0
+
+    def iter_content(self, n=65536):
+        for c in self._ch:
+            self.consumed += 1
+            yield c
+
+    def close(self):
+        pass
+
+
+_orig_retry = C._fetch_with_retry
+_orig_pubS = C.is_public_host
+C.is_public_host = lambda h: True
+try:
+    sS1 = C.Site("https://example.invalid/", NS())
+    sS1.robot_denied = lambda u: False
+    _bad_chunks = [b"NOTMEDIA" * 8 for _ in range(10)]
+    C._fetch_with_retry = lambda site, sess, url, ref, acc, **k: (
+        _StreamResp(_bad_chunks), url, 200)
+    _rS1 = C.fetch_one(sS1, None, "https://example.invalid/a.mp4", 91001,
+                       "https://example.invalid/", "list")
+    atk("stream-early-discard", _rS1 == ""
+        and sS1.counters.get("skip_magic_early", 0) >= 1
+        and sS1.counters.get("skip_nomagic", 0) >= 1)
+    atk("stream-no-part",
+        not [x for x in os.listdir(sS1.dl) if x.endswith(".part")])
+    _mp4 = b"\x00\x00\x00\x18ftypmp42" + os.urandom(2048)
+    _chunks = [_mp4[i:i + 700] for i in range(0, len(_mp4), 700)]
+    C._fetch_with_retry = lambda site, sess, url, ref, acc, **k: (
+        _StreamResp(_chunks), url, 200)
+    _rS2 = C.fetch_one(sS1, None, "https://example.invalid/b.mp4", 91002,
+                       "https://example.invalid/", "list")
+    atk("stream-ok", _rS2 != "" and os.path.isfile(_rS2))
+    _want = hashlib.sha256(open(_rS2, "rb").read()).hexdigest()
+    _got = ""
+    with open(sS1.invf, encoding="utf-8-sig") as _f:
+        _rows = list(_f.readlines())
+    for _ln in _rows[1:]:
+        if os.path.basename(_rS2) in _ln:
+            _got = _ln.strip().split(",")[3]
+    atk("stream-sha", _got == _want and _want != "")
+finally:
+    C._fetch_with_retry = _orig_retry
+    C.is_public_host = _orig_pubS
+
+print("[T] C2反劫持/verify/配置校验")
+sT = C.Site("https://example.invalid/", NS())
+sT.cfg["__evil_key__"] = 1
+sT.cfg["proxies"] = 123
+_cfg2, _warns2 = C._validate_config_dict(dict(sT.cfg))
+atk("cfg-unknown-warn", any("__evil_key__" in w for w in _warns2))
+atk("cfg-badtype-fallback", _cfg2.get("proxies") == []
+    and any("proxies" in w for w in _warns2))
+_l1 = C._take_session_lock(sT)
+_l2 = C._take_session_lock(sT)
+atk("sess-lock", _l1 is True and _l2 is False)
+try:
+    os.remove(os.path.join(sT.root, ".session.lock"))
+except Exception:
+    pass
+C._note_mitm(sT, "unit-probe", "https://example.invalid/x")
+atk("mitm-bump", sT.counters.get("mitm-signal", 0) >= 1)
+sV = C.Site("https://example.invalid/", NS())
+with open(os.path.join(sV.dl, "00001_good.mp4"), "wb") as _f:
+    _f.write(b"\x00\x00\x00\x18ftypmp42" + b"v" * 600)
+_gh = C.hash_file(os.path.join(sV.dl, "00001_good.mp4"))
+with open(sV.invf, "w", encoding="utf-8-sig", newline="") as _f:
+    _f.write("url,file,bytes,sha256,source\n")
+    _f.write("https://example.invalid/g,00001_good.mp4,600,%s,list\n" % _gh)
+    _f.write("https://example.invalid/m,00002_miss.mp4,600,%s,list\n" % _gh)
+    _f.write("https://example.invalid/b,00001_good.mp4,600,%s,list\n" % ("0" * 64))
+atk("verify-rc", C.cmd_verify(sV) == 1
+    and sV.counters.get("verify-fail", 0) == 2)
+
+print("[U] C3藏匿一致/效率 + C4 rules")
+sU0 = C.Site("https://example.invalid/", NS())
+_sessU0, _ = C.make_session(sU0)
+atk("lang-default",
+    _sessU0.headers.get("Accept-Language") == "zh-CN,zh;q=0.9,en;q=0.8")
+sU1 = C.Site("https://example.invalid/", NS())
+sU1.cfg["locale"] = "en-US"
+atk("lang-follow-locale", C._accept_language_of(sU1) == "en-US,en;q=0.9")
+_sessU1, _ = C.make_session(sU1)
+atk("lang-sess-sync",
+    _sessU1.headers.get("Accept-Language") == "en-US,en;q=0.9")
+sU1.cfg["locale"] = "javascript:alert(1)"
+atk("lang-evil-fallback",
+    C._accept_language_of(sU1) == "zh-CN,zh;q=0.9,en;q=0.8")
+atk("sf-samesite", C._sec_fetch_for("https://example.invalid/v/a.mp4",
+    "https://example.invalid/p/1", "video/*") == {
+    "Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "no-cors",
+    "Sec-Fetch-Dest": "video"})
+atk("sf-crosssite", C._sec_fetch_for("https://cdn.evil.invalid/v/a.mp4",
+    "https://example.invalid/p/1", "video/*")["Sec-Fetch-Site"] == "cross-site")
+atk("sf-img-dest", C._sec_fetch_for("https://cdn.evil.invalid/a.jpg",
+    "https://example.invalid/p/1", "image/*,*/*;q=0.8")["Sec-Fetch-Dest"] == "image")
+_capU = _CapSess()
+_orig_pubU = C.is_public_host
+C.is_public_host = lambda h: True
+try:
+    C._fetch_guarded(_capU, "https://cdn.evil.invalid/v/a.mp4",
+                     "https://example.invalid/p/1", "video/*", site=sU0)
+finally:
+    C.is_public_host = _orig_pubU
+atk("sf-wire-cross", _capU.got.get("Sec-Fetch-Site") == "cross-site")
+atk("sf-wire-nocors", _capU.got.get("Sec-Fetch-Mode") == "no-cors")
+atk("dl-default-serial", C.cmd_dl.__defaults__ == (60, 1))
+atk("dl-parser-help",
+    "dl" in C.build_parser().format_help())
+_orig_gai = C.socket.getaddrinfo
+_calls = [0]
+
+
+def _fake_gai(host, port, *a, **k):
+    _calls[0] += 1
+    return [(2, 1, 6, "", ("8.8.8.8", 0))]
+
+
+C.socket.getaddrinfo = _fake_gai
+try:
+    C._DNS_CACHE.pop("dns-cache.invalid", None)
+    atk("dns-first",
+        C._resolve_ips("dns-cache.invalid") == ["8.8.8.8"] and _calls[0] == 1)
+    atk("dns-hit",
+        C._resolve_ips("dns-cache.invalid") == ["8.8.8.8"] and _calls[0] == 1)
+    atk("dns-cached-shape", "dns-cache.invalid" in C._DNS_CACHE)
+finally:
+    C.socket.getaddrinfo = _orig_gai
+    try:
+        C._DNS_CACHE.pop("dns-cache.invalid", None)
+    except Exception:
+        pass
+sR = C.Site("https://example.invalid/", NS())
+sR.cfg["rules"] = {"version": 1,
+                   "detail_link_selector": [".ok", "a[evil]", "x" * 201,
+                                            "a,div", "<script>", 123]}
+atk("rule-evil-drop",
+    C.site_rules(sR).get("detail_link_selector") == [".ok", "a[evil]", "123"])
+sR.cfg["rules"] = {"version": 999, "detail_link_selector": [".ok"]}
+atk("rule-ver-drop", C.site_rules(sR) == {}
+    and "WARNING" in open(sR.logf, encoding="utf-8").read())
+sR.cfg["rules"] = {"version": 1, "next_page_selector": [".nxt"]}
+
+
+class _FakeRulePage:
+    def __init__(self):
+        self._site_ref = sR
+        self.url = "https://example.invalid/list/1.html"
+
+    def query_selector(self, sel):
+        class _E:
+            def get_attribute(self, k):
+                return "/list/2.html" if sel == ".nxt" else ""
+        return _E() if sel == ".nxt" else None
+
+    def query_selector_all(self, sel):
+        return []
+
+
+_orig_nlf = C.norm_link_from
+C.norm_link_from = lambda page, base, href: "https://example.invalid/list/2.html" \
+    if href == "/list/2.html" else ""
+try:
+    atk("rule-priority", C.find_next(_FakeRulePage(),
+                                     "https://example.invalid/list/1.html")
+        == "https://example.invalid/list/2.html")
+finally:
+    C.norm_link_from = _orig_nlf
 
 print("\nREDTEAM: %d 项全部守住" % N)
 for x in (s, s2, s2h, s2v, s2i, s6, s7, s7b, s8, s_col, s_ns, s9, _sg,

@@ -121,7 +121,9 @@ def build_cmd(mode: str, url: str, opts: dict):
         cmd += ["--text-proxy", opts["text_proxy"]]
     if opts.get("hls_key"):
         cmd += ["--hls-key", opts["hls_key"]]
-    if mode == "watch":
+    if opts.get("lock"):
+        cmd += ["--lock-session"]
+    if mode in ("watch", "dl"):
         cmd += ["--dl-jobs", str(int(opts.get("jobs", 3)))]
     return cmd
 
@@ -139,7 +141,8 @@ def action_page(url: str, opts: dict):
              (("⬇ 下载 dl", "dl")),
              (("🎬 深层视频 watch", "watch")),
              (("🧭 栏目测绘 nav", "nav")),
-             (("🧹 清扫 purge", "purge")),
+              (("🧹 清扫 purge", "purge")),
+              (("✅ 离线自证 verify", "verify")),
              (("🩺 环境自检 envcheck", "envcheck")),
              (("⚙ CDN媒体: %s (切)" % ("开" if opts["cdn"] else "关"), "t_cdn")),
              (("⚙ 允许http: %s (切)" % ("开" if opts["http"] else "关"), "t_http")),
@@ -157,7 +160,8 @@ def action_page(url: str, opts: dict):
                 "t_textpx")),
               (("⚙ HLS密钥: %s (设)" % (opts["hls_key"] or "无"),
                 "t_hlskey")),
-             (("⚙ 视频优先: %s (切)" % ("开" if opts["video"] else "关"), "t_video")),
+              (("⚙ 视频优先: %s (切)" % ("开" if opts["video"] else "关"), "t_video")),
+              (("⚙ 会话独占锁: %s (切)" % ("开" if opts["lock"] else "关"), "t_lock")),
              (("⚙ 每轮页数: %d (设)" % opts["batch"], "t_batch")),
              (("⚙ 下载并发: %d (设)" % opts["jobs"], "t_jobs")),
              ])
@@ -228,6 +232,9 @@ def action_page(url: str, opts: dict):
         if r == "t_video":
             opts["video"] = not opts["video"]
             continue
+        if r == "t_lock":
+            opts["lock"] = not opts["lock"]
+            continue
         if r == "t_batch":
             try:
                 opts["batch"] = max(1, int(input("每轮页数: ").strip()))
@@ -277,8 +284,8 @@ def main() -> int:
     opts = {"cdn": True, "http": False, "batch": 60, "proxy": "", "column": "",
             "video": True, "jobs": 3, "insecure": False, "browser": "",
             "clone": False, "spoof": "", "spoof_referer": "", "snapshot": "",
-            "softwall": "", "text_proxy": "", "hls_key": ""}
-    print("auto_site_dl TUI v1.5.0 (q 返回, Ctrl+C 停止任务)")
+            "softwall": "", "text_proxy": "", "hls_key": "", "lock": False}
+    print("auto_site_dl TUI v1.6.0 (q 返回, Ctrl+C 停止任务)")
     site_page(opts)
     return 0
 
