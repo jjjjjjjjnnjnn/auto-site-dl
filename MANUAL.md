@@ -1,6 +1,6 @@
 # 操作手册（MANUAL）
 
-对应版本：v1.8.0 ｜ 适用系统：Windows 10/11（PowerShell）｜ Python ≥ 3.9
+对应版本：v1.9.0 ｜ 适用系统：Windows 10/11（PowerShell）｜ Python ≥ 3.9
 
 ---
 
@@ -41,7 +41,7 @@ python -u -X utf8 tui.py
 ```
 
 - **站点页**：列出 `sites/` 下已有站点（文件数/体积），或选 `＋ 新网址` 输入 `https://…`
-- **操作页**：8 种模式 + 8 组开关。数字选择，`q` 返回
+- **操作页**：11 种模式 + 20 组开关。终端里 `↑↓` 移动、`→`/`Enter` 确认、`←`/`Esc` 返回（光标位置会被记住）；管道/重定向时自动降级为数字行模式
 - **运行**：子进程前台执行，实时看输出；`Ctrl+C` 停止
 
 开关说明：
@@ -249,7 +249,7 @@ python -u -X utf8 site_crawler.py dl https://example.com/ 60 --allow-cdn --no-vi
 ## 7. 日常维护
 
 ```powershell
-python -u -X utf8 tests\test_security.py   # 回归：371 项全过 exit 0（改代码必跑）
+python -u -X utf8 tests\test_security.py   # 回归：374 项全过 exit 0（改代码必跑）
 python -X utf8 -m py_compile site_crawler.py watchflow.py tui.py i18n.py
 python -u -X utf8 site_crawler.py envcheck
 python -u -X utf8 site_crawler.py verify https://example.com/   # 离线自证下载物
@@ -456,6 +456,8 @@ python -u -X utf8 site_crawler.py updatecheck
 - 覆盖：TUI 全量双语（含危险区 YES 确认）；引擎日志暂中文（增量中）；`--lang` 已直通引擎，TUI 有"语言"开关（auto→zh→en 循环）
 - 用法：`python -u -X utf8 tui.py --lang en`；`site_crawler.py … --lang en`
 
-- 回归闸门：`tests/test_security.py` 371 项（[X]学习限制与i18n 20，含 v1.8.1 TUI `pick()` 真调用 3）
+- 回归闸门：`tests/test_security.py` 374 项（[X]学习限制与i18n 23，含 TUI 真调用 6：行模式 3 + 方向键 3）
 
 > v1.8.1 热修：`tui.py pick()` 的 `for i, (label, _)` 把 i18n 函数 `_` 遮蔽成字符串，TUI 启动即 `TypeError`。修为 `val`，教训——冒烟只验了键集合相等、没真调一次 `pick`；现回归用 mock input 喂 `1`/`q` 真调，`_` 再被遮蔽当场被抓。
+>
+> v1.9.0 方向键 TUI：终端下 `pick()` 改走 `msvcrt.getch()`（Windows）/`termios`（POSIX）方向键菜单，首尾循环、记住各页光标；`AUTO_SITE_DL_LINE=1` 或管道时回数字行模式。文本输入（代理/栏目/YES 门）仍走 `input()`。

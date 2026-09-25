@@ -24,7 +24,7 @@ python -u -X utf8 tui.py                      # 终端交互 UI（推荐入口�
 
 ## 两种用法
 
-**TUI（`tui.py`，纯标准库）**：站点页 → 操作页（11 种模式 auto/check/wait/dl/watch/nav/purge/verify/replay/envcheck/updatecheck + 20 组开关，危险区需输入 YES）→ 前台运行，Ctrl+C 停止。`python -u -X utf8 tui.py --lang en` 切英语。
+**TUI（`tui.py`，纯标准库）**：站点页 → 操作页（11 种模式 auto/check/wait/dl/watch/nav/purge/verify/replay/envcheck/updatecheck + 20 组开关，危险区需输入 YES）→ 前台运行，Ctrl+C 停止。终端里 `↑↓` 移动、`→`/`Enter` 确认、`←`/`Esc` 返回（管道时自动降级数字选择）。`python -u -X utf8 tui.py --lang en` 切英语。
 
 **命令行**：
 
@@ -76,7 +76,7 @@ auto-site-dl/
 ├── watchflow.py          视频深层流程（取流状态机 + 并行下载池）
 ├── tui.py                终端交互 UI（中英双语）
 ├── i18n.py               语言探测与译表（纯标准库）
-├── tests/test_security.py 安全回归（红队自审，371 项，纯本地零网络）
+├── tests/test_security.py 安全回归（红队自审，374 项，纯本地零网络）
 ├── requirements.txt
 ├── MANUAL.md             操作手册
 ├── LICENSE               Apache-2.0
@@ -108,11 +108,12 @@ auto-site-dl/
 - **更新检查 v1.8.0**：`updatecheck` 只问 GitHub releases 最新 tag 并通知，永不自动下载/执行
 - **i18n v1.8.0**：`i18n.py` 系统语言探测（仅 zh 回中文，其余/失败回英语），TUI 已全量双语，`--lang` 直通引擎
 - **TUI 热修 v1.8.1**：`pick()` 循环变量遮蔽 `_` 致启动即崩，已改名 + 补真调用回归（mock input 喂 `1`/`q`）
+- **方向键 TUI v1.9.0**：终端下方向键菜单（首尾循环、记住光标），`AUTO_SITE_DL_LINE=1`/管道时回数字行模式
 
 ## 维护
 
 ```powershell
-python -u -X utf8 tests\test_security.py   # 回归闸门：371 项全过，exit 0
+python -u -X utf8 tests\test_security.py   # 回归闸门：374 项全过，exit 0
 python -X utf8 -m py_compile site_crawler.py watchflow.py tui.py i18n.py
 python -u -X utf8 site_crawler.py envcheck
 ```

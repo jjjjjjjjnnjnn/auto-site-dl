@@ -3,7 +3,7 @@
 """终端交互UI(纯标准库): 三层菜单, 子进程前台运行, Ctrl+C 停止任务.
 
 站点页 -> 操作页 -> 运行(跟日志).
-数字 选择, Enter 确认, q 返回.
+终端下方向键菜单(↑↓移动 →/Enter确认 ←/Esc返回); 管道/重定向时自动降级为数字行模式.
 双语: --lang auto|zh|en (默认 auto=系统语言, 取不到回英语).
 """
 import os
@@ -50,9 +50,21 @@ def _onoff(v) -> str:
 
 
 def pick(title: str, items):
-    """items: [(显示, 值)]. 返回值或None(q退出). 支持数字快捷键."""
+    """items: [(显示, 值)]. 返回值或None(返回/取消). 终端=方向键菜单, 否则数字行模式."""
+    labels = [lab for (lab, _v) in items]
+    if _arrow_ok() and labels:
+        start = _LAST.get(title, 0)
+        try:
+            r = _menu(title, labels, start)
+        except (EOFError, KeyboardInterrupt):
+            return None
+        if r is None:
+            return None
+        _LAST[title] = r
+        return items[r][1]
+    # 行模式: 管道/重定向/测试/AUTO_SITE_DL_LINE=1
     print("\n== %s ==" % title)
-    for i, (label, val) in enumerate(items, 1):
+    for i, (label, _v) in enumerate(items, 1):
         print("  %d. %s" % (i, label))
     print(_("pick_back"))
     while True:
@@ -65,6 +77,88 @@ def pick(title: str, items):
         if s.isdigit() and 1 <= int(s) <= len(items):
             return items[int(s) - 1][1]
         print(_("pick_hint"))
+
+
+_LAST = {}
+
+
+def _arrow_ok() -> bool:
+    """方向键模式可用? 需双端TTY + 有按键读取手段. 测试/管道用行模式."""
+    if os.environ.get("AUTO_SITE_DL_LINE") == "1":
+        return False
+    try:
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            return False
+    except Exception:
+        return False
+    if sys.platform == "win32":
+        try:
+            import msvcrt  # noqa: F401
+            return True
+        except Exception:
+            return False
+    try:
+        import termios  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _getkey() -> str:
+    """读一键, 归一为 up/down/left/right/enter/esc/单字符."""
+    if sys.platform == "win32":
+        import msvcrt
+        c = msvcrt.getch()
+        if c in (b"\xe0", b"\x00"):
+            c2 = msvcrt.getch()
+            return {b"H": "up", b"P": "down",
+                    b"K": "left", b"M": "right"}.get(c2, "")
+        if c == b"\r":
+            return "enter"
+        if c == b"\x1b":
+            return "esc"
+        try:
+            return c.decode("utf-8", "ignore").lower()
+        except Exception:
+            return ""
+    import termios
+    import tty
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        c = sys.stdin.read(1)
+        if c == "\x1b":
+            c += sys.stdin.read(2)
+            return {"\x1b[A": "up", "\x1b[B": "down",
+                    "\x1b[C": "right", "\x1b[D": "left"}.get(c, "esc")
+        if c in ("\r", "\n"):
+            return "enter"
+        return c.lower()
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def _menu(title: str, labels, start: int = 0):
+    """方向键菜单. 返回下标或None(返回/取消). 首尾循环."""
+    idx = max(0, min(start, len(labels) - 1))
+    while True:
+        sys.stdout.write("\x1b[2J\x1b[H")
+        print("== %s ==" % title)
+        for i, lab in enumerate(labels):
+            mark = "> " if i == idx else "  "
+            print("%s%d. %s" % (mark, i + 1, lab))
+        print(_("pick_keys"))
+        sys.stdout.flush()
+        k = _getkey()
+        if k == "up":
+            idx = (idx - 1) % len(labels)
+        elif k == "down":
+            idx = (idx + 1) % len(labels)
+        elif k in ("enter", "right"):
+            return idx
+        elif k in ("esc", "left", "q"):
+            return None
 
 
 def run_cmd(cmd):

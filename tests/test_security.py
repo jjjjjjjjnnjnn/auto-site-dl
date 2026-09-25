@@ -1211,11 +1211,23 @@ atk("i18n-detect-shape", I18N.detect_system_lang() in ("zh", "en"))
 I18N.set_lang("auto")
 import tui as TUI  # noqa: E402
 from unittest import mock as _mock
-with _mock.patch("builtins.input", side_effect=["1"]):
+with _mock.patch.object(TUI, "_arrow_ok", return_value=False), \
+        _mock.patch("builtins.input", side_effect=["1"]):
     atk("tui-pick-num", TUI.pick("t", [("a", "A"), ("b", "B")]) == "A")
-with _mock.patch("builtins.input", side_effect=["zzz", "q"]):
+with _mock.patch.object(TUI, "_arrow_ok", return_value=False), \
+        _mock.patch("builtins.input", side_effect=["zzz", "q"]):
     atk("tui-pick-quit", TUI.pick("t", [("a", "A")]) is None)
 atk("tui-i18n-alive", callable(I18N._) and I18N._("pick_back") != "pick_back")
+TUI._LAST.clear()
+with _mock.patch.object(TUI, "_arrow_ok", return_value=True), \
+        _mock.patch.object(TUI, "_getkey", side_effect=["down", "down", "enter"]):
+    atk("tui-arrow-nav", TUI.pick("ta", [("a", "A"), ("b", "B"), ("c", "C")]) == "C")
+with _mock.patch.object(TUI, "_arrow_ok", return_value=True), \
+        _mock.patch.object(TUI, "_getkey", side_effect=["esc"]):
+    atk("tui-arrow-esc", TUI.pick("tb", [("a", "A")]) is None)
+with _mock.patch.object(TUI, "_arrow_ok", return_value=True), \
+        _mock.patch.object(TUI, "_getkey", side_effect=["up", "right"]):
+    atk("tui-arrow-wrap", TUI.pick("tc", [("a", "A"), ("b", "B")]) == "B")
 sX = C.Site("https://example.invalid/", NS())
 atk("learn-default-on", C.learn_on(sX) is True)
 atk("learn-killed",
