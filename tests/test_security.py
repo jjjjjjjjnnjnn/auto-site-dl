@@ -596,7 +596,7 @@ atk("lock-match", all("≠" not in c and c not in ("未安装", "缺失", "不�
                       for _, _, c in _locks))
 _tlsst = C.tls_selftest()
 atk("tls-selftest-shape", isinstance(_tlsst, dict) and len(_tlsst) >= 5)
-atk("imp-future", C._pick_impersonate("Mozilla/5.0 Chrome/999.0.0.0") == "chrome136")
+atk("imp-future", C._pick_impersonate("Mozilla/5.0 Chrome/999.0.0.0") == "chrome150")
 atk("guard-data", C._browser_guard(sH, "data:text/html,hi") is False)
 atk("guard-blob", C._browser_guard(sH, "blob:https://example.invalid/x") is False)
 atk("guard-v6loop", C._browser_guard(sH, "http://[::1]/") is False)
@@ -635,6 +635,13 @@ _sessM, _kindM = C.make_session(sK2)
 atk("spoof-mobile-hdr",
     _sessM.headers.get("Sec-CH-UA-Mobile") == "?1"
     and _sessM.headers.get("Sec-CH-UA-Platform") == '"Android"')
+atk("spoof-mobile-tls", C._tls_kind_for(sK2) == "curl_cffi")
+atk("spoof-mobile-imp", C._pick_impersonate(sK2.UA) == "chrome131_android")
+atk("spoof-mobile-kind", "android" in _kindM)
+atk("spoof-bot-still-req", C._tls_kind_for(sK1) == "requests" and _kindK == "requests")
+atk("imp-142", C._pick_impersonate("Mozilla/5.0 Chrome/142.0.0.0") == "chrome142")
+atk("imp-150", C._pick_impersonate("Mozilla/5.0 Chrome/150.0.0.0") == "chrome150")
+atk("imp-future150", C._pick_impersonate("Mozilla/5.0 Chrome/999.0.0.0") == "chrome150")
 
 print("[L] 路径二: 缓存快照")
 sL0 = C.Site("https://example.invalid/", NS())
@@ -781,11 +788,173 @@ finally:
     C.is_public_host = _orig_pub2
 atk("tp-unpatched", C.is_public_host == _orig_pub2)
 
+print("[O] A3/A4补丁回归(相对守卫/referer-fallback)")
+
+
+class _FakeSessKw:
+    def __init__(self, script, proxies=None):
+        self._script = list(script)
+        self.proxies = proxies or {}
+        self.calls = []
+
+    def get(self, url, **kw):
+        self.calls.append((url, kw))
+        if not self._script:
+            raise RuntimeError("no more scripted responses")
+        return self._script.pop(0)
+
+
+_sgO = C.Site("https://example.invalid/", NS())
+_pl_rel_seg = "#EXTM3U\n//127.0.0.1/seg.ts\n"
+_fsO1 = _FakeSess([_FakeResp(200, {}, "https://8.8.8.8/v/index.m3u8", text=_pl_rel_seg)])
+atk("playlist-relative-seg-ssrf",
+    C._playlist_guard_ok(_sgO, _fsO1, "https://8.8.8.8/v/index.m3u8",
+                         "https://example.invalid/") is False)
+_pl_rel_key = "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"//127.0.0.1/k?token=abc\"\nseg1.ts\n"
+_fsO2 = _FakeSess([_FakeResp(200, {}, "https://8.8.8.8/v/index.m3u8", text=_pl_rel_key)])
+atk("playlist-relative-key-ssrf",
+    C._playlist_guard_ok(_sgO, _fsO2, "https://8.8.8.8/v/index.m3u8",
+                         "https://example.invalid/") is False)
+_sgO2 = C.Site("https://example.invalid/", NS())
+_fsO3 = _FakeSessKw([_FakeResp(403, {}, "https://8.8.8.8/x"),
+                      _FakeResp(200, {}, "https://8.8.8.8/x")])
+_rO3, _fO3, _sO3 = C._fetch_with_retry(_sgO2, _fsO3, "https://8.8.8.8/x", "", "*/*")
+atk("referer-fallback-retry", _rO3 is not None and _sO3 == 200 and len(_fsO3.calls) == 2)
+atk("referer-fallback-hdr",
+    (_fsO3.calls[1][1].get("headers") or {}).get("Referer") == "https://8.8.8.8/")
+atk("referer-fallback-bump", _sgO2.counters.get("referer-fallback", 0) == 1)
+
+print("[P] B5 extra_headers / B6 hls-key")
+sP = C.Site("https://example.invalid/", NS())
+sP.cfg["extra_headers"] = {
+    "example.invalid": {"Referer": "https://example.invalid/",
+                        "Origin": "https://example.invalid",
+                        "Cookie": "a=b", "X-Evil": "1"},
+    "other.invalid": {"Referer": "https://other.invalid/"},
+}
+atk("xh-only-two-keys",
+    set(sP.extra_headers_for("example.invalid").keys()) <= {"Referer", "Origin"})
+atk("xh-cookie-drop", "Cookie" not in sP.extra_headers_for("example.invalid"))
+atk("xh-evil-key-drop", "X-Evil" not in sP.extra_headers_for("example.invalid"))
+atk("xh-host-scope", sP.extra_headers_for("other.invalid") == {
+    "Referer": "https://other.invalid/"})
+atk("xh-host-miss", sP.extra_headers_for("evil.example") == {})
+sP.cfg["extra_headers"] = {"example.invalid": {"Referer": "javascript:alert(1)"}}
+atk("xh-bad-scheme-drop", sP.extra_headers_for("example.invalid") == {})
+sP.cfg["extra_headers"] = {"example.invalid": {"Origin": "https://h/a b"}}
+atk("xh-space-drop", sP.extra_headers_for("example.invalid") == {})
+sP.cfg["extra_headers"] = {"example.invalid": {"Referer": "https://u@h/"}}
+atk("xh-userinfo-drop", sP.extra_headers_for("example.invalid") == {})
+sP.cfg["extra_headers"] = "not-a-dict"
+atk("xh-nondict-safe", sP.extra_headers_for("example.invalid") == {})
+
+
+class _CapSess:
+    def __init__(self):
+        self.proxies = {}
+        self.got = None
+
+    def get(self, url, **kw):
+        self.got = kw.get("headers", {})
+
+        class _R:
+            status_code = 200
+            headers = {}
+            url = url
+
+            def close(self):
+                pass
+
+        return _R()
+
+
+sP2 = C.Site("https://example.invalid/", NS())
+sP2.cfg["extra_headers"] = {"8.8.8.8": {"Referer": "https://cfg.invalid/",
+                                        "Origin": "https://cfg.invalid"}}
+_orig_pub3 = C.is_public_host
+C.is_public_host = lambda h: True
+try:
+    _cap = _CapSess()
+    C._fetch_guarded(_cap, "https://8.8.8.8/x", "https://explicit.invalid/",
+                     "*/*", site=sP2)
+finally:
+    C.is_public_host = _orig_pub3
+atk("xh-no-override-referer", _cap.got.get("Referer") == "https://explicit.invalid/")
+atk("xh-fill-origin", _cap.got.get("Origin") == "https://cfg.invalid")
+atk("hk-ok-uri", C.Site("https://example.invalid/",
+                         NS(hls_key="https://k.invalid/k")).hls_key() == (
+    "https://k.invalid/k", ""))
+atk("hk-ok-iv", C.Site("https://example.invalid/",
+                        NS(hls_key="https://k.invalid/k,0xabcdef12")).hls_key() == (
+    "https://k.invalid/k", "0xabcdef12"))
+atk("hk-bad-iv-drop", C.Site("https://example.invalid/",
+                              NS(hls_key="https://k.invalid/k,zz!!")).hls_key() == (
+    "", ""))
+atk("hk-space-drop", C.Site("https://example.invalid/",
+                             NS(hls_key="https://k.invalid/k a")).hls_key() == (
+    "", ""))
+atk("hk-semi-ok", C.Site("https://example.invalid/",
+                           NS(hls_key="https://k.invalid/k;evil")).hls_key() == (
+    "https://k.invalid/k;evil", ""))
+atk("hk-newline-drop", C.Site("https://example.invalid/",
+                               NS(hls_key="https://k.invalid/k\nX: 1")).hls_key() == (
+    "", ""))
+atk("hk-scheme-drop", C.Site("https://example.invalid/",
+                              NS(hls_key="ftp://k.invalid/k")).hls_key() == (
+    "", ""))
+
+print("[Q] B7挑战分类/B8 token快道")
+atk("ch-cf-hdr", C.diagnose_http_challenge(
+    403, {"cf-mitigated": "challenge"}, "")[0] == "cf-challenge")
+atk("ch-cf-body", C.diagnose_http_challenge(
+    403, {}, "<title>Attention Required! | Cloudflare</title>")[0] == "cf-challenge")
+atk("ch-turnstile", C.diagnose_http_challenge(
+    403, {}, '<div class="cf-turnstile"></div>')[0] == "turnstile")
+atk("ch-turnstile-plat", C.diagnose_http_challenge(
+    403, {}, "challenge-platform script")[0] == "turnstile")
+atk("ch-datadome", C.diagnose_http_challenge(
+    403, {"x-datadome": "1"}, "datadome captcha")[0] == "datadome")
+atk("ch-datadome-body", C.diagnose_http_challenge(
+    403, {}, "DataDome device check")[0] == "datadome")
+atk("ch-geetest-not-dd", C.diagnose_http_challenge(
+    403, {}, "geetest captcha")[0] != "datadome")
+atk("ch-forbidden", C.diagnose_http_challenge(
+    403, {}, "<html>forbidden</html>")[0] == "forbidden")
+atk("ch-non403-empty", C.diagnose_http_challenge(
+    200, {}, "Attention Required")[0] == "")
+atk("ch-hint-str", isinstance(C.diagnose_http_challenge(
+    403, {}, "x")[1], str) and len(C.diagnose_http_challenge(
+    403, {}, "x")[1]) > 0)
+sQ = C.Site("https://example.invalid/", NS())
+_fsQ = _FakeSess([_FakeResp(403, {"cf-mitigated": "challenge"},
+                            "https://8.8.8.8/x", text="Attention Required")])
+_rQ, _fQ, _sQ = C._fetch_with_retry(sQ, _fsQ, "https://8.8.8.8/x",
+                                    "https://8.8.8.8/page", "*/*")
+atk("ch-bump", _rQ is None and _sQ == 403
+    and sQ.counters.get("challenge-cf-challenge", 0) == 1)
+atk("token-re", W._TOKEN_Q_RE.search("https://h/v/a.m3u8?token=abc") is not None
+    and W._TOKEN_Q_RE.search("https://h/v/a.m3u8?expires=123") is not None
+    and W._TOKEN_Q_RE.search("https://h/v/a.m3u8?sig=x") is not None
+    and W._TOKEN_Q_RE.search("https://h/v/a.m3u8") is None)
+_jobsQ = []
+for _mkQ, _muQ, _rfQ in [("m3u8", "https://8.8.8.8/v/a.m3u8", "d1"),
+                         ("m3u8", "https://8.8.8.8/v/b.m3u8?token=abc", "d2"),
+                         ("direct", "https://8.8.8.8/v/c.mp4", "d3")]:
+    if _mkQ == "m3u8" and W._TOKEN_Q_RE.search(_muQ):
+        _jobsQ.insert(0, (_mkQ, _muQ, _rfQ))
+    else:
+        _jobsQ.append((_mkQ, _muQ, _rfQ))
+atk("fastpath-head", _jobsQ[0][1] == "https://8.8.8.8/v/b.m3u8?token=abc"
+    and len(_jobsQ) == 3)
+sQ2 = C.Site("https://example.invalid/", NS())
+sQ2.bump("token-fastpath")
+atk("fastpath-bump", sQ2.counters.get("token-fastpath", 0) == 1)
+
 print("\nREDTEAM: %d 项全部守住" % N)
 for x in (s, s2, s2h, s2v, s2i, s6, s7, s7b, s8, s_col, s_ns, s9, _sg,
           sA, sB, sC, sD, sD2, sE, sF, sF2, sG, sH, sT, sT2,
           sK0, sK1, sK2, sK3, sL0, sL1, sL2, sL3, sL4, sL5, sL6, sL7,
-          sM0, sM1, sM2, sM3, sN0, sN1):
+          sM0, sM1, sM2, sM3, sN0, sN1, sP, sP2, sQ, sQ2):
     try:
         shutil.rmtree(x.root, ignore_errors=True)
     except Exception:

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 jjjjjjjjnnjnn
-"""通用站点媒体下载器 v1.4.0: 填网址 -> 检测人机验证 -> 需验证弹窗等人工 -> 自动全站下载.
+"""通用站点媒体下载器 v1.5.0: 填网址 -> 检测人机验证 -> 需验证弹窗等人工 -> 自动全站下载.
 
 用法 (python -u -X utf8 site_crawler.py ...):
   check <url>              只检测: 该站是否需要人机验证 (不下载, 不存页面内容)
@@ -32,6 +32,8 @@
                              默认off, 只操作已加载DOM不发额外请求
   --text-proxy PREFIX      一站式文本代理前缀(通用, 不内置第三方);
                              check遇验证时报代理情报, 正文只内存判定不落盘
+  --hls-key URI[,IV]       HLS密钥透传(默认空=不用; 非法整体丢弃;
+                             N_m3u8DL-RE/yt-dlp生效, ffmpeg跳过)
   --video-first            视频优先(默认开, 只下视频/m3u8跳过图片; --no-video-first 关)
   --dl-jobs N              watch下载并发(默认3, 收获串行+下载并行)
 
@@ -76,7 +78,7 @@ from urllib import robotparser
 
 import requests
 
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 
 # ---------------------------------------------------------------- 身份池
 UA_POOL = [
@@ -90,6 +92,8 @@ UA_POOL = [
     "(KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
 ]
 VIEWPORTS = [
     {"width": 1366, "height": 768},
@@ -144,6 +148,7 @@ MEDIA_SUFFIXES = IMG_SUFFIXES | VID_SUFFIXES | STREAM_SUFFIXES
 
 AD_KEYWORDS = ["advert", "preroll", "doubleclick", "googlesyndication",
                "popads", "adserver", "tracking"]
+_TOKEN_Q_RE = re.compile(r"[?&](token|expires?|sign|auth|sig|deadline)=", re.I)
 
 NAV_HINTS = [
     ("ERR_CERT_AUTHORITY_INVALID",
@@ -205,6 +210,7 @@ JS_HARVEST = """() => ({
 JS_COUNT = "() => document.querySelectorAll('img,video,source,a[href]').length"
 
 _TLS_WARNED = False
+_HLS_FFMPEG_WARNED = False
 
 # ================================================================ URL/网络安全
 def norm_url(url: str) -> str:
@@ -390,6 +396,49 @@ def diagnose_nav_error(err: str) -> str:
         if sub in e:
             return hint
     return "未知导航错误. 先跑 envcheck 看环境, 再看完整报错."
+
+
+def diagnose_http_challenge(status, headers, body_head):
+    """HTTP 403 挑战分类(纯函数, 不存 body). 返回 (kind, hint).
+
+    kind ∈ {cf-challenge, turnstile, datadome, forbidden, ""}.
+    body 只取前 4KB 判定, 调用方负责截断/不落盘.
+    geetest 只归浏览器侧 VERIFY_SELECTORS, 此处不判 datadome.
+    """
+    try:
+        st = int(status)
+    except Exception:
+        return "", ""
+    if st != 403:
+        return "", ""
+    try:
+        h = {str(k).lower(): str(v).lower()
+             for k, v in dict(headers or {}).items()}
+    except Exception:
+        h = {}
+    try:
+        b = str(body_head or "")[:4096].lower()
+    except Exception:
+        b = ""
+    try:
+        blob = " ".join(list(h.keys()) + list(h.values())) + " " + b
+    except Exception:
+        blob = b
+    if "datadome" in blob:
+        return ("datadome",
+                "DataDome拦截: 换住宅出口后走wait人工验证, 数据中心IP勿重试.")
+    if "cf-turnstile" in b or "challenge-platform" in b \
+            or "cf-turnstile" in " ".join(h.keys()):
+        return ("turnstile",
+                "Turnstile验证: 走wait人工过验证, 勿高频重试.")
+    if h.get("cf-mitigated", "") == "challenge" \
+            or "attention required" in b \
+            or "cf-challenge" in b \
+            or ("just a moment" in b and "cloudflare" in b):
+        return ("cf-challenge",
+                "Cloudflare质询: 换住宅IP/换出口后走wait人工验证.")
+    return ("forbidden",
+            "纯403: 查Referer/UA防盗链, 非验证页, 先查伪装与来源页.")
 
 
 def proxy_alive(proxy: str, timeout: float = 5) -> bool:
@@ -648,6 +697,96 @@ class Site:
     def ref_for(self, referer: str) -> str:
         """Referer 生效点: 伪装值优先, 否则透传调用方."""
         return self.spoof_referer() or referer
+
+    def extra_headers_for(self, host: str) -> dict:
+        """Host 作用域附加头(M-Fetch rules.json 安全子集): 只收 Referer/Origin.
+
+        cfg["extra_headers"] 形如 {host: {Referer: url, Origin: url}}.
+        键大小写不敏感归一化为 Referer/Origin; 值必须 http(s) 且过
+        _safe_url_for_cmd(无空白/控制符), 余键(含 Cookie)一律丢弃.
+        """
+        try:
+            h = (host or "").strip().lower().rstrip(".")
+        except Exception:
+            return {}
+        if not h:
+            return {}
+        try:
+            raw = self.cfg.get("extra_headers")
+        except Exception:
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        node = None
+        try:
+            for k, v in raw.items():
+                if isinstance(k, str) and k.strip().lower().rstrip(".") == h:
+                    node = v
+                    break
+        except Exception:
+            return {}
+        if not isinstance(node, dict):
+            return {}
+        out = {}
+        for k, v in node.items():
+            try:
+                if not isinstance(k, str) or not isinstance(v, str):
+                    continue
+                kl = k.strip().lower()
+                if kl == "referer":
+                    ck = "Referer"
+                elif kl == "origin":
+                    ck = "Origin"
+                else:
+                    continue
+                vv = (v or "").strip()
+                if not vv or len(vv) > 2000:
+                    continue
+                if not _safe_url_for_cmd(vv):
+                    continue
+                p = urlsplit(vv)
+                if p.scheme not in ("http", "https") or not p.hostname:
+                    continue
+                if "@" in (p.netloc or ""):
+                    continue
+                out[ck] = vv
+            except Exception:
+                continue
+        return out
+
+    def hls_key(self):
+        """HLS 密钥透传: --hls-key URI[,IV] 原样收, 校验后回 (uri, iv).
+
+        URI 须 http(s) 且过 _safe_url_for_cmd; IV 须 ^(0x)?[0-9a-fA-F]+$
+        任一段非法则整体丢弃回 ("", "").
+        """
+        raw = _cfg_str(getattr(self.args, "hls_key", "")) or \
+            _cfg_str(self.cfg.get("hls_key"))
+        raw = (raw or "").strip()
+        if not raw:
+            return "", ""
+        try:
+            if re.search(r"\s|[\x00-\x1f\x7f]", raw):
+                return "", ""
+            if "," in raw:
+                uri, iv = raw.split(",", 1)
+            else:
+                uri, iv = raw, ""
+            uri = (uri or "").strip()
+            iv = (iv or "").strip()
+            if not _safe_url_for_cmd(uri):
+                return "", ""
+            p = urlsplit(uri)
+            if p.scheme not in ("http", "https") or not p.hostname:
+                return "", ""
+            if "@" in (p.netloc or ""):
+                return "", ""
+            if iv:
+                if not re.fullmatch(r"(?:0x)?[0-9a-fA-F]+", iv):
+                    return "", ""
+            return uri, iv
+        except Exception:
+            return "", ""
 
     def snapshot_mode(self) -> str:
         """快照档: off(默认)/wayback/archive/auto. 未知值归 off."""
@@ -941,15 +1080,19 @@ def _sec_ch_ua(ua: str) -> str:
     return '"Chromium";v="%s", "Google Chrome";v="%s", "Not-A.Brand";v="99"' % (v, v)
 
 
-_IMPERSONATE_OK = ("chrome136", "chrome131", "chrome124", "chrome120",
+_IMPERSONATE_OK = ("chrome150", "chrome146", "chrome145", "chrome142",
+                    "chrome136", "chrome131", "chrome124", "chrome120",
                     "chrome116", "chrome")
 
 
 def _pick_impersonate(ua: str) -> str:
     """指纹与 UA 同代绑定: 取 UA 的 Chrome 大版本, 就近选 curl_cffi 支持的 preset.
 
+    Mobile UA 用 chrome131_android 真指纹(缺失由 make_session 回落 requests);
     老指纹配新 UA 是教科书级脚本信号; preset 不存在则抛错由上层回落 requests.
     """
+    if "Mobile" in (ua or ""):
+        return "chrome131_android"
     m = re.search(r"Chrome/(\d+)", ua or "")
     major = int(m.group(1)) if m else 0
     for name in _IMPERSONATE_OK:
@@ -1011,14 +1154,17 @@ def tls_selftest():
 
 
 def _tls_kind_for(site) -> str:
-    """TLS 通道选择: bot 伪装无对应 TLS preset, 强制 requests(防指纹错配).
+    """TLS 通道选择: 仅 bot 伪装无对应 TLS preset, 强制 requests(防指纹错配).
 
+    mobile 已有 chrome131_android 真指纹, 走 curl_cffi.
     返回 "curl_cffi" 或 "requests". 可单元测试, 不碰网络.
     """
     try:
         sp = site.spoof_mode()
         if sp and SPOOF_PRESETS[sp]["bot"]:
             return "requests"
+        if sp == "mobile":
+            return "curl_cffi"
     except Exception:
         pass
     return "curl_cffi"
@@ -1068,8 +1214,8 @@ def make_session(site):
                                         site.UA or "") or [0, 0])[1])
             except Exception:
                 _major = 0
-            if _major > 136:
-                site.log("WARNING UA超前指纹库(Chrome/%d>136): 用最高 preset, "
+            if _major > 150:
+                site.log("WARNING UA超前指纹库(Chrome/%d>150): 用最高 preset, "
                          "易被识别, 建议升级curl_cffi" % _major)
             s = cr.Session(impersonate=imp)
             kind = "curl_cffi:" + imp
@@ -1753,7 +1899,7 @@ def session_fresh(site):
 
 
 def _fetch_guarded(sess, url: str, referer: str, accept: str, max_hops: int = 5,
-                   enforce_peer: bool = False):
+                   enforce_peer: bool = False, site=None):
     """守卫式 GET: 纯手动跟跳转, 每跳主机名 SSRF 守卫, 落定后对端复检(直连时).
 
     返回 (resp, final_url, status). resp 为 None 表示被拦/失败, status 供重试判决.
@@ -1768,7 +1914,19 @@ def _fetch_guarded(sess, url: str, referer: str, accept: str, max_hops: int = 5,
         if not is_public_host(host):
             return None, cur, -1
         try:
-            r = sess.get(cur, headers={"Referer": referer, "Accept": accept},
+            _hdrs = {"Referer": referer, "Accept": accept}
+            try:
+                _h = (urlsplit(cur).hostname or "").lower().rstrip(".")
+            except Exception:
+                _h = ""
+            try:
+                if site is not None and _h:
+                    for _k, _v in (site.extra_headers_for(_h) or {}).items():
+                        if _k.lower() not in (k.lower() for k in _hdrs):
+                            _hdrs[_k] = _v
+            except Exception:
+                pass
+            r = sess.get(cur, headers=_hdrs,
                          timeout=30, stream=True, allow_redirects=False)
         except Exception:
             return None, cur, -2
@@ -1795,6 +1953,24 @@ def _fetch_guarded(sess, url: str, referer: str, accept: str, max_hops: int = 5,
             cur = nxt
             continue
         if status != 200:
+            if status == 403 and site is not None:
+                try:
+                    _hdrs = dict(getattr(r, "headers", None) or {})
+                except Exception:
+                    _hdrs = {}
+                try:
+                    _head = _read_capped(r, 4096)
+                except Exception:
+                    _head = ""
+                try:
+                    _kind, _hint = diagnose_http_challenge(
+                        status, _hdrs, _head)
+                    if _kind:
+                        site.bump("challenge-" + _kind)
+                        site.log("CHALLENGE %s kind=%s %s"
+                                 % (url_for_log(cur), _kind, _hint))
+                except Exception:
+                    pass
             try:
                 r.close()
             except Exception:
@@ -1831,9 +2007,12 @@ def _fetch_with_retry(site, sess, url: str, referer: str, accept: str,
         pass
     for i in range(4):
         r, final, status = _fetch_guarded(sess, url, referer, accept,
-                                          enforce_peer=enforce_peer)
+                                          enforce_peer=enforce_peer, site=site)
         if r is not None:
             return r, final, status
+        if status in (403, 428):
+            last = (None, final, status)
+            break  # 留给下面的referer-fallback, 不进429/5xx退避
         if status not in (429, 500, 502, 503, 504):
             return None, final, status
         if i >= 3:
@@ -1846,6 +2025,29 @@ def _fetch_with_retry(site, sess, url: str, referer: str, accept: str,
         site.bump("retry_%d" % status)
         time.sleep(min(wait, 60.0))
         last = (None, final, status)
+    try:
+        _, _, fb_status = last
+    except Exception:
+        fb_status = 0
+    if fb_status in (403, 428):
+        try:
+            target_host = (urlsplit(url).hostname or "").lower()
+        except Exception:
+            target_host = ""
+        try:
+            ref_host = (urlsplit(referer or "").hostname or "").lower()
+        except Exception:
+            ref_host = ""
+        if target_host and (not ref_host or ref_host != target_host):
+            fb_referer = "https://%s/" % target_host
+            r2, final2, status2 = _fetch_guarded(sess, url, fb_referer, accept,
+                                                enforce_peer=enforce_peer)
+            if r2 is not None:
+                try:
+                    site.bump("referer-fallback")
+                except Exception:
+                    pass
+            return r2, final2, status2
     return last
 
 
@@ -2013,7 +2215,7 @@ def _playlist_guard_ok(site, sess, url: str, referer: str, depth: int = 2,
     if depth < 0 or url in _seen or len(_seen) >= 6:
         return depth >= 0 and url in _seen
     _seen.add(url)
-    r, _, _ = _fetch_guarded(sess, url, referer, "*/*")
+    r, _, _ = _fetch_guarded(sess, url, referer, "*/*", site=site)
     if r is None:
         return False
     try:
@@ -2044,7 +2246,7 @@ def _playlist_guard_ok(site, sess, url: str, referer: str, depth: int = 2,
         uri = (m.group(1) or m.group(2) or m.group(3) or "").strip()
         if not uri:
             continue
-        u = urljoin(url, uri)
+        u = urljoin(url, uri)  # 相对KEY继承播放列表URL, query由urljoin原样保留(不断query)
         if re.match(r"^https?://", u):
             try:
                 h = urlsplit(u).hostname or ""
@@ -2057,7 +2259,9 @@ def _playlist_guard_ok(site, sess, url: str, referer: str, depth: int = 2,
         if not line or line.startswith("#"):
             continue
         if not re.match(r"^https?://", line):
-            continue
+            line = urljoin(url, line)  # 相对行继承播放列表URL(含token query原样保留)
+            if not re.match(r"^https?://", line):
+                continue
         low = line.lower().split("?")[0]
         if low.endswith(_PL_SEG_EXT):
             try:
@@ -2241,6 +2445,11 @@ def fetch_m3u8(site, url: str, idx: int, referer: str, sess=None):
     ck = os.path.join(site.root, ".cookies_%d.netscape" % idx)
     have_ck = _write_netscape(site, ck)
     try:
+        hk_uri, hk_iv = site.hls_key()
+    except Exception:
+        hk_uri, hk_iv = "", ""
+    hk_raw = ("%s,%s" % (hk_uri, hk_iv)) if (hk_uri and hk_iv) else hk_uri
+    try:
         exe = find_exe(["N_m3u8DL-RE.exe", "N_m3u8DL-RE"])
         if exe:
             cmd = [exe, url, "--save-dir", site.dl, "--save-name", "%05d" % idx,
@@ -2251,6 +2460,10 @@ def fetch_m3u8(site, url: str, idx: int, referer: str, sess=None):
                 cmd += ["--proxy", p]
             if insecure:
                 cmd += ["--no-check-certificate"]
+            if hk_uri:
+                cmd += ["--custom-hls-key", hk_uri]
+                if hk_iv:
+                    cmd += ["--custom-hls-iv", hk_iv]
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
             if r.returncode == 0 and check_magic(final) == ".mp4":
                 record(site, url, final, "m3u8:n_m3u8dl")
@@ -2264,6 +2477,8 @@ def fetch_m3u8(site, url: str, idx: int, referer: str, sess=None):
                 cmd += ["--proxy", p]
             if insecure:
                 cmd += ["--no-check-certificate"]
+            if hk_raw:
+                cmd += ["--hls-key", hk_raw]
             cmd += [url]
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
             if r.returncode == 0 and check_magic(final) == ".mp4":
@@ -2274,6 +2489,14 @@ def fetch_m3u8(site, url: str, idx: int, referer: str, sess=None):
             return ""
         exe = find_exe(["ffmpeg.exe", "ffmpeg"])
         if exe:
+            global _HLS_FFMPEG_WARNED
+            if hk_raw and not _HLS_FFMPEG_WARNED:
+                try:
+                    site.log("WARNING --hls-key 对 ffmpeg 无效, 已跳过"
+                             "(仅 N_m3u8DL-RE/yt-dlp 生效)")
+                except Exception:
+                    pass
+                _HLS_FFMPEG_WARNED = True
             cmd = [exe, "-y", "-i", url, "-c", "copy", final]
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
             if r.returncode == 0 and check_magic(final) == ".mp4":
@@ -2539,6 +2762,8 @@ def cmd_dl(site, batch: int = 60) -> int:
             media = sorted(set(media), key=lambda u: media_rank(u))
             for u in media:
                 if u.lower().endswith(".m3u8"):
+                    if _TOKEN_Q_RE.search(u):
+                        site.log("token短命即时下: %s" % url_for_log(u))
                     f = fetch_m3u8(site, u, idx[0], url)
                 else:
                     f = fetch_one(site, sess, u, idx[0], url, "list")
@@ -2761,7 +2986,7 @@ def cmd_envcheck(site=None) -> int:
     if st:
         cur = _pick_impersonate("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                                "Chrome/136.0.0.0 Safari/537.36")
+                                "Chrome/150.0.0.0 Safari/537.36")
         rep("tls-presets", bool(st.get(cur)),
             "%d/%d可用, 当前%s" % (sum(1 for v in st.values() if v),
                                    len(st), cur if st.get(cur) else cur + "缺失"))
@@ -2820,6 +3045,8 @@ def build_parser():
                     help="客户端干预(默认off)")
     ap.add_argument("--text-proxy", default="",
                     help="一站式文本代理前缀(默认空=不用)")
+    ap.add_argument("--hls-key", dest="hls_key", default="",
+                    help="HLS密钥透传 URI[,IV](默认空=不用; 非法整体丢弃)")
     return ap
 
 

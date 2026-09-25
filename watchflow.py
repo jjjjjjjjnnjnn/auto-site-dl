@@ -31,6 +31,7 @@ _STALL_NORM = [s.lower().replace(" ", "") for s in STALL_TEXT]
 AD_HOSTS = ["doubleclick", "googlesyndication", "popads", "adserver",
             "advert", "preroll", "tracking", "analytics", "pushsdk",
             "hmtracker", "umeng", "51.la"]
+_TOKEN_Q_RE = re.compile(r"[?&](token|expires?|sign|auth|sig|deadline)=", re.I)
 
 STRIP_JS = """() => {
   const sels = ['.modal', '.popup', '.overlay-full', '.ad-cover',
@@ -326,14 +327,22 @@ def cmd_watch(site, batch: int = 10, dl_jobs: int = 3) -> int:
             C.log_softwall(site, C.apply_softwall(page, site))  # 路径三: 遮罩挡播放先清
             mu, mkind = watch_one(site, page, 0, d, 50, sess)
             if mu:
-                jobs.append((mkind, mu, d))
+                if mkind == "m3u8" and _TOKEN_Q_RE.search(mu):
+                    jobs.insert(0, (mkind, mu, d))
+                    site.bump("token-fastpath")
+                else:
+                    jobs.append((mkind, mu, d))
             C.polite_sleep(site)
         seen_urls = {u for _, u, _ in jobs}
         for u in bucket:
             if u not in seen_urls:
                 seen_urls.add(u)
-                jobs.append(("m3u8" if u.lower().endswith(".m3u8") else "direct",
-                             u, site.url))
+                _k = "m3u8" if u.lower().endswith(".m3u8") else "direct"
+                if _k == "m3u8" and _TOKEN_Q_RE.search(u):
+                    jobs.insert(0, (_k, u, site.url))
+                    site.bump("token-fastpath")
+                else:
+                    jobs.append((_k, u, site.url))
         site.log("watch 取到流%d, 并行下载…" % len(jobs))
         lw = LockedWriter(site)
         with ThreadPoolExecutor(max_workers=max(1, min(8, dl_jobs))) as ex:

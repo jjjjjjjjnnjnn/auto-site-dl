@@ -119,6 +119,8 @@ def build_cmd(mode: str, url: str, opts: dict):
         cmd += ["--softwall", opts["softwall"]]
     if opts.get("text_proxy"):
         cmd += ["--text-proxy", opts["text_proxy"]]
+    if opts.get("hls_key"):
+        cmd += ["--hls-key", opts["hls_key"]]
     if mode == "watch":
         cmd += ["--dl-jobs", str(int(opts.get("jobs", 3)))]
     return cmd
@@ -153,6 +155,8 @@ def action_page(url: str, opts: dict):
               (("⚙ 干预: %s (切)" % (opts["softwall"] or "off"), "t_soft")),
               (("⚙ 文本代理: %s (设)" % (opts["text_proxy"] or "无"),
                 "t_textpx")),
+              (("⚙ HLS密钥: %s (设)" % (opts["hls_key"] or "无"),
+                "t_hlskey")),
              (("⚙ 视频优先: %s (切)" % ("开" if opts["video"] else "关"), "t_video")),
              (("⚙ 每轮页数: %d (设)" % opts["batch"], "t_batch")),
              (("⚙ 下载并发: %d (设)" % opts["jobs"], "t_jobs")),
@@ -206,6 +210,12 @@ def action_page(url: str, opts: dict):
         if r == "t_textpx":
             try:
                 opts["text_proxy"] = input("文本代理前缀(空=清除): ").strip()
+            except (EOFError, KeyboardInterrupt):
+                pass
+            continue
+        if r == "t_hlskey":
+            try:
+                opts["hls_key"] = input("HLS密钥 URI[,IV](空=清除): ").strip()
             except (EOFError, KeyboardInterrupt):
                 pass
             continue
@@ -267,8 +277,8 @@ def main() -> int:
     opts = {"cdn": True, "http": False, "batch": 60, "proxy": "", "column": "",
             "video": True, "jobs": 3, "insecure": False, "browser": "",
             "clone": False, "spoof": "", "spoof_referer": "", "snapshot": "",
-            "softwall": "", "text_proxy": ""}
-    print("auto_site_dl TUI v1.4.0 (q 返回, Ctrl+C 停止任务)")
+            "softwall": "", "text_proxy": "", "hls_key": ""}
+    print("auto_site_dl TUI v1.5.0 (q 返回, Ctrl+C 停止任务)")
     site_page(opts)
     return 0
 

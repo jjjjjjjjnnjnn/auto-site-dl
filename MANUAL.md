@@ -1,6 +1,6 @@
 # 操作手册（MANUAL）
 
-对应版本：v1.4.0 ｜ 适用系统：Windows 10/11（PowerShell）｜ Python ≥ 3.9
+对应版本：v1.5.0 ｜ 适用系统：Windows 10/11（PowerShell）｜ Python ≥ 3.9
 
 ---
 
@@ -195,15 +195,50 @@ python -u -X utf8 site_crawler.py dl https://example.com/ 60 --allow-cdn --no-vi
 | bot 伪装直接 403 | 强风控站识破非足迹流量；改 mobile 或关伪装走正常验证 |
 | 快照无可用存档/限流 | archive.today 域名轮换+限流不稳定；`auto` 顺序有超时预算，失败即过不断点 |
 | strip 后页面排版乱 | 误删正文容器（50 节点上限内）；关 `--softwall` 重进页面即恢复 |
+| 403 但不知是哪种墙 | 看 `CHALLENGE kind=` 行：cf-challenge/turnstile 换住宅出口后 `wait`；datadome 同理勿重试；forbidden 查 Referer/UA 防盗链 |
+| token 流下到一半 403 | 短命 token 过期；watch 已优先即时下载，仍失败则是秒级过期或私有签名，不支持 |
+
+---
+
+## 11. v1.5.0 已知限制松动说明
+
+背景：对照"已知限制"四条逐条松动，思路学自 GitHub（M-Fetch 自动 Referer / yt-dlp #6567 variant_query+hls_key / xersbtt 拦截即下 / 2026 反检测三层模型基准）。政策线（DRM/打码）不动。
+
+### 11.1 mobile 真指纹（限制 2 修复）
+
+- curl_cffi 自带 `chrome131_android`（本机 0.16.3 实测 44 preset 中有），`--spoof mobile` 现绑定真 Android 指纹，不再强制 requests
+- preset 表刷新到 chrome150，UA 池加 Chrome/142，超前阈值同步到 150；envcheck 自测行同步
+- bot 类（googlebot/bingbot）全球无 preset，仍强制 requests+告警——这是诚实保留，不是没做
+- 保鲜：`curl-cffi update`（免费档含 Chrome/Safari/Firefox 新指纹），季度跑一次
+
+### 11.2 防盗链与 token 流（限制 3 松动）
+
+- **自动 Referer 兜底**（学 M-Fetch）：403/428 且 Referer 与目标不同源时，用目标 host 重试一次，记 `referer-fallback`；429/5xx 退避路径零改动
+- **playlist 相对行守卫补齐**：相对分片/KEY 行 `urljoin` 成绝对地址再过 SSRF（只加覆盖，不改交引擎行为）；token query 原样透传不断链；`//内网/seg.ts` 类协议相对攻击现被拦截（回归锁定）
+- **短命优先**：m3u8 含 `token/expires/sign/auth/sig/deadline` query 时 watch 队首插队即时下（`token-fastpath`），dl 模式打提示行
+- **Host 作用域附加头**（学 M-Fetch rules.json 的安全子集）：`config.json` 的 `extra_headers` 形如 `{"example.com": {"Referer": "…", "Origin": "…"}}`；只收两键，Cookie 等余键丢弃，值须 http(s) 无 userinfo；调用方显式 Referer 优先，只补缺
+  ```json
+  {"extra_headers": {"example.com": {"Referer": "https://example.com/"}}}
+  ```
+- **`--hls-key URI[,IV]`**（学 yt-dlp）：透传 N_m3u8DL-RE `--custom-hls-key/--custom-hls-iv` 与 yt-dlp `--hls-key`；ffmpeg 无等价旗标，跳过并 WARNING 一次；URI 非法/IV 非 hex 整体丢弃；命令走 list 传递无 shell
+- 剩余盲区（诚实）：站内私有 seal 逆向、秒级过期 token
+
+### 11.3 挑战分类（限制 4 的可操作化）
+
+- 403 现场判定 `CHALLENGE kind=`：cf-challenge（`cf-mitigated`/Attention Required）/ turnstile / datadome / forbidden（纯防盗链），各给一句话动作；body 只读前 4KB 不落盘；geetest 仍归浏览器侧选择器，不误判 datadome
+- 三层模型（TLS > IP > 行为）：IP 信誉是单最高信号——强风控站请用住宅出口，这是文档建议不是代码能修的
+
+- 回归闸门：`tests/test_security.py` 310 项（[K2]移动指纹7 + [O]守卫兜底6 + [P]附加头与密钥18 + [Q]挑战分类与快道15）
 
 ---
 
 ## 7. 日常维护
 
 ```powershell
-python -u -X utf8 tests\test_security.py   # 回归：266 项全过 exit 0（改代码必跑）
+python -u -X utf8 tests\test_security.py   # 回归：310 项全过 exit 0（改代码必跑）
 python -X utf8 -m py_compile site_crawler.py watchflow.py tui.py
 python -u -X utf8 site_crawler.py envcheck
+curl-cffi update   # 指纹保鲜：拉最新 TLS preset（免费档含 Chrome/Safari/Firefox）
 ```
 
 - `sites/` 下的 `cookies.txt` 是会话凭证，不要外传、不要入库（`.gitignore` 已排除整个 `sites/`）
