@@ -1,0 +1,22 @@
+# 站点运行时数据: 目标站URL/会话凭证/下载产物/浏览器profile, 永不入库
+sites/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.pyo
+
+# 运行日志与下载临时文件
+*.log
+*.part
+*.netscape
+
+# 浏览器profile副本(运行时生成)
+profile/
+profile_cloned/
+
+# 虚拟环境与系统文件
+.venv/
+venv/
+.DS_Store
+Thumbs.db

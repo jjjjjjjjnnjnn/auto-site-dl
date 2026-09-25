@@ -1,0 +1,4 @@
+playwright>=1.40
+requests>=2.31
+curl-cffi  # 可选: 下载层TLS指纹伪装(chrome), 缺失自动回落requests
+camoufox  # 可选: C++层浏览器指纹后端(--browser camoufox), 需 python -m camoufox fetch
