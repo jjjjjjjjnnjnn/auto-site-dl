@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 jjjjjjjjnnjnn
-"""通用站点媒体下载器 v1.9.5: 填网址 -> 检测人机验证 -> 需验证弹窗等人工 -> 自动全站下载.
+"""通用站点媒体下载器 v1.9.6: 填网址 -> 检测人机验证 -> 需验证弹窗等人工 -> 自动全站下载.
 
 用法 (python -u -X utf8 site_crawler.py ...):
   check <url>              只检测: 该站是否需要人机验证 (不下载, 不存页面内容)
@@ -87,7 +87,7 @@ from urllib import robotparser
 
 import requests
 
-__version__ = "1.9.5"
+__version__ = "1.9.6"
 
 # ---------------------------------------------------------------- 身份池
 UA_POOL = [
@@ -3623,27 +3623,47 @@ def harvest(page, site, base: str):
     return media, sorted(set(anchors))
 
 
+_DIVE_KEY_RE = re.compile(r"detail|play|/vod/|/video/|watch|/p/")
+
+
+def _same_host(site, url: str) -> bool:
+    """同站判定(回退试探用, 防漫游站外): 主机全等即同站."""
+    try:
+        return (urlsplit(url).hostname or "").lower() == (site.host or "").lower()
+    except Exception:
+        return False
+
+
 def deep_dive(page, site, sess, anchors, idx: int, budget: int):
-    """详情/观看页深挖: 每页至多2个, 全局预算封顶. 拿 video/source/m3u8 真流."""
+    """详情/观看页深挖: 每页至多2个, 全局预算封顶. 拿 video/source/m3u8 真流.
+
+    两轮: 关键词命中优先; 零命中时回退试探同站前 2 个(门户页详情链无关键词
+    时兜底, 如 /x/123.html 类; 同站约束防漫游, 同样走守卫/验证/预算, 记
+    dive_fallback). 非标锚点不再抛错(直接跳过).
+    """
     got = []
-    n = 0
-    for a in anchors:
-        if n >= 2 or budget[0] <= 0:
-            break
-        if not re.search(r"detail|play|/vod/|/video/|watch|/p/", a):
-            continue
-        budget[0] -= 1
-        n += 1
+    state = [0]  # 本页已跟进数(至多2)
+    visited = set()
+    matched = [0]
+
+    def _one(a):
+        """跟进单个详情页. 返回 (reverify, descended)."""
+        try:
+            if a in visited:
+                return False, False
+            visited.add(a)
+        except Exception:
+            pass
         if not _browser_guard(site, a):
-            continue
+            return False, False
         try:
             page.goto(a, wait_until="domcontentloaded", timeout=30000)
             think(page, 800)
         except Exception:
-            continue
+            return False, False
         nv, _ = detect_verify(page, site)
         if nv:
-            return got, True
+            return True, False
         try:
             html = page.content()
         except Exception:
@@ -3672,6 +3692,48 @@ def deep_dive(page, site, sess, anchors, idx: int, budget: int):
                     got.append(f)
                     idx[0] += 1
         polite_sleep(site)
+        return False, True
+
+    for a in anchors or []:
+        if state[0] >= 2 or budget[0] <= 0:
+            break
+        try:
+            hit = bool(_DIVE_KEY_RE.search(a or ""))
+        except Exception:
+            continue
+        if not hit:
+            continue
+        matched[0] += 1
+        budget[0] -= 1
+        state[0] += 1
+        rv, _ = _one(a)
+        if rv:
+            return got, True
+    if matched[0] <= 0 and anchors:
+        same = []
+        for a in anchors:
+            try:
+                if a and _same_host(site, a):
+                    same.append(a)
+            except Exception:
+                continue
+            if len(same) >= 2:
+                break
+        if same:
+            try:
+                site.bump("dive_fallback")
+                site.log("详情回退: %d 个锚点无关键词命中, 试探同站前 %d 个"
+                         % (len(anchors), len(same)))
+            except Exception:
+                pass
+            for a in same:
+                if state[0] >= 2 or budget[0] <= 0:
+                    break
+                budget[0] -= 1
+                state[0] += 1
+                rv, _ = _one(a)
+                if rv:
+                    return got, True
     return got, False
 
 
@@ -3921,6 +3983,13 @@ def cmd_dl(site, batch: int = 60, dl_jobs: int = 1) -> int:
             polite_sleep(site)
     finally:
         close_ctx(pw, browser, ctx)
+    try:  # 末页网络捕获无下页可消费时不静默丢弃: 计数+指引(行为不变)
+        if net_cap and not stop_verify:
+            site.bump("net_remain")
+            site.log("WARNING 网络捕获余 %d 条未消费(末页无下页): "
+                     "若要深挖请跑 watch" % len(net_cap))
+    except Exception:
+        pass
     try:
         save_learn(site)
     except Exception:

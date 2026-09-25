@@ -1466,6 +1466,76 @@ _sn2 = C._diag_snapshot(_BoomPage(), sYv)
 atk("diag-boom", _sn2 == {"title": "", "final": "https://h/x",
                           "html_len": -1, "raw": {}, "verify": "", "grew": 0})
 
+print("[AB] deep_dive 同站回退")
+
+
+class _FakeDiveSite:
+    def __init__(self, host="h"):
+        self.host = host
+        self.cfg = {}
+        self.counters = {}
+        self.logs = []
+
+    def bump(self, k, n=1):
+        self.counters[k] = self.counters.get(k, 0) + n
+
+    def log(self, *a):
+        self.logs.append(" ".join(str(x) for x in a))
+
+    def media_ok(self, url):
+        return True
+
+
+class _FakeDivePage:
+    def __init__(self, verify_sel=None):
+        self.visited = []
+        self.verify_sel = verify_sel
+
+    def goto(self, url, wait_until=None, timeout=None):
+        self.visited.append(url)
+
+    def content(self):
+        return ""
+
+    def evaluate(self, js):
+        return {}
+
+    def query_selector(self, sel):
+        if self.verify_sel and sel == self.verify_sel:
+            return object()
+        return None
+
+    def wait_for_timeout(self, ms):
+        pass
+
+
+with _mock.patch.object(C, "_browser_guard", return_value=True), \
+        _mock.patch.object(C, "polite_sleep", lambda *a, **k: None):
+    _ds = _FakeDiveSite()
+    _pg = _FakeDivePage()
+    _bud = [20]
+    _got, _rv = C.deep_dive(_pg, _ds, None,
+                            ["https://h/x/1.html", "https://h/x/2.html",
+                             "https://evil/x/9.html"], [0], _bud)
+    atk("dive-fallback", _got == [] and _rv is False
+        and _pg.visited == ["https://h/x/1.html", "https://h/x/2.html"]
+        and _bud == [18] and _ds.counters.get("dive_fallback") == 1)
+    _ds2 = _FakeDiveSite()
+    _pg2 = _FakeDivePage()
+    _bud2 = [20]
+    _got2, _rv2 = C.deep_dive(_pg2, _ds2, None,
+                              ["https://h/a.html", "https://h/watch/1",
+                               "https://h/b.html"], [0], _bud2)
+    atk("dive-keyword-kept", _got2 == [] and _rv2 is False
+        and _pg2.visited == ["https://h/watch/1"] and _bud2 == [19]
+        and "dive_fallback" not in _ds2.counters)
+    _ds3 = _FakeDiveSite()
+    _pg3 = _FakeDivePage(verify_sel=C.VERIFY_SELECTORS[0])
+    _bud3 = [20]
+    _got3, _rv3 = C.deep_dive(_pg3, _ds3, None,
+                              ["https://h/watch/9"], [0], _bud3)
+    atk("dive-verify", _got3 == [] and _rv3 is True and _bud3 == [19])
+
 print("\nREDTEAM: %d 项全部守住" % N)
 for x in (s, s2, s2h, s2v, s2i, s6, s7, s7b, s8, s_col, s_ns, s9, _sg,
           sA, sB, sC, sD, sD2, sE, sF, sF2, sG, sH, sT, sT2,

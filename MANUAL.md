@@ -1,6 +1,6 @@
 # 操作手册（MANUAL）
 
-对应版本：v1.9.5 ｜ 适用系统：Windows 10/11（PowerShell）｜ Python ≥ 3.9
+对应版本：v1.9.6 ｜ 适用系统：Windows 10/11（PowerShell）｜ Python ≥ 3.9
 
 ---
 
@@ -271,7 +271,7 @@ python -u -X utf8 site_crawler.py dl https://example.com/ 60 --allow-cdn --no-vi
 ## 7. 日常维护
 
 ```powershell
-python -u -X utf8 tests\test_security.py   # 回归：403 项全过 exit 0（改代码必跑）
+python -u -X utf8 tests\test_security.py   # 回归：406 项全过 exit 0（改代码必跑）
 python -X utf8 -m py_compile site_crawler.py watchflow.py tui.py i18n.py
 python -u -X utf8 site_crawler.py envcheck
 python -u -X utf8 site_crawler.py verify https://example.com/   # 离线自证下载物
@@ -478,7 +478,7 @@ python -u -X utf8 site_crawler.py updatecheck
 - 覆盖：TUI 全量双语（含危险区 YES 确认）；引擎日志暂中文（增量中）；`--lang` 已直通引擎，TUI 有"语言"开关（auto→zh→en 循环）
 - 用法：`python -u -X utf8 tui.py --lang en`；`site_crawler.py … --lang en`
 
-- 回归闸门：`tests/test_security.py` 403 项（[X]23 + [Y]19 + [Z]7 + [AA]diag 快照 3）
+- 回归闸门：`tests/test_security.py` 406 项（[X]23 + [Y]19 + [Z]7 + [AA]3 + [AB]深挖回退 3）
 
 > v1.8.1 热修：`tui.py pick()` 的 `for i, (label, _)` 把 i18n 函数 `_` 遮蔽成字符串，TUI 启动即 `TypeError`。修为 `val`，教训——冒烟只验了键集合相等、没真调一次 `pick`；现回归用 mock input 喂 `1`/`q` 真调，`_` 再被遮蔽当场被抓。
 >
@@ -493,3 +493,5 @@ python -u -X utf8 site_crawler.py updatecheck
 > v1.9.4 随机默认（每次运行自动换身份，安全基座不动）：审计确认已随机项——UA、视口、`run_id` 身份束、代理轮换/粘滞、限速高斯抖动、鼠标拟人、重试抖动；本轮补两处——UA 池 6→12（Chrome 131/132/136/142/144/145/146/148/150 + Edge 130/144 + Firefox 133，逐条对齐 TLS preset，Chrome 大版本全 ≤150 无超前警告）与 `think()` ±25% 均匀抖动（下限 100ms，调用方传标称值即可）。刻意**不随机**：TLS 校验、http/明文、伪装、锁、劫持、浏览器通道（求稳，有缺失回退）、指纹（必须与 UA 同代绑定，错配即脚本信号）。`[Z]` 把安全默认钉死：解析器默认值全关断言 + 池卫生（Mozilla 前缀/版本封顶/数量下限）+ 全池指纹对齐 + think 上下界 + 随机流经全局 RNG（seed 可复现）+ 视口范围。
 >
 > v1.9.5 diag 只读快照（定位"会话有效但 0 媒体 0 锚点"的空跑）：实战出现 wait 已验证、dl 注入 21 对、页进了但收割全空。`_diag_snapshot` 只读取数——标题（去注行截断）/终址（脱敏到 path）/正文体量（只记字节数）/原始计数（img/vid/src/a 个数）/验证态/沉降增量，`[AA]` 锁定脱敏与永不抛错。判读：raw 全 0=空壳页（精简/未渲染/SPA 未挂载）；raw 有数但媒体 0=全被过滤（重点查 `blob:`——MSE 播流的 video 标签 src 就是 blob，正被 `norm_media` 丢弃，及 `is_media_url` 后缀门）；raw 缺失=JS 执行层问题。下一步候选（待 diag 定夺）：blob/流式收割增强，或 wait 暖机的上下文复用（persistent profile）。
+>
+> v1.9.6 详情回退（修门户页空跑）：`diag` 实锤——门户页 344 链 0 媒体（287KB 索引页，视频全在详情链后），而 `deep_dive` 关键词门（detail|play|/vod/|/video/|watch|/p/）零命中即静默跳过全部 297 锚点。现两轮：关键词优先；零命中回退试探**同站**前 2 个（防漫游站外，同样走 `_browser_guard`/验证/预算，记 `dive_fallback` 并打一行日志）。同站用主机全等判定；非字符串锚点不再抛错（旧代码 `re.search` 遇非标输入可崩整轮）。另 `net_cap` 末页余量记 `net_remain` + WARNING（行为不变，只不再无声丢弃）。`[AB]` 锁定：回退只进同站（站外锚点不碰）、关键词存在时不回退、详情页撞验证即停并上报。注意：回退每页至多 2 个、全局预算 20，先看它能不能咬住详情链；若详情页本身是 JS 播放器（流地址只在网络层出现），下一步给 `deep_dive` 加网络捕获排空或转 `watch` 模式。
