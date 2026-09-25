@@ -254,6 +254,8 @@ def cmd_watch(site, batch: int = 10, dl_jobs: int = 3) -> int:
     site.log("TARGET=%s MODE=watch v%s jobs=%d" % (site.url, C.__version__, dl_jobs))
     if C.preflight(site) == 2:
         return 2
+    if not C._disk_ok(site.dl):
+        site.log("WARNING 磁盘剩余不足500MB, 仍继续(可能中途失败)")
     sess, kind = C.make_session(site)
     site.log("下载层: " + kind)
     try:
@@ -276,6 +278,8 @@ def cmd_watch(site, batch: int = 10, dl_jobs: int = 3) -> int:
         ctx.on("page", lambda pg: (pg.close() if pg != page else None))
     except Exception:
         pass
+    bucket = []  # 网络层捕获: 列表页路过的直链流
+    C._attach_capture(page, site, bucket)
     details, seen = [], set()
     url = site.url
     try:
@@ -308,6 +312,8 @@ def cmd_watch(site, batch: int = 10, dl_jobs: int = 3) -> int:
         site.log("watch 收获详情页%d" % len(details))
         jobs = []
         for d in details:
+            if not C._browser_guard(site, d):
+                continue
             try:
                 page.goto(d, wait_until="domcontentloaded", timeout=30000)
                 C.think(page, 1000)
@@ -321,6 +327,12 @@ def cmd_watch(site, batch: int = 10, dl_jobs: int = 3) -> int:
             if mu:
                 jobs.append((mkind, mu, d))
             C.polite_sleep(site)
+        seen_urls = {u for _, u, _ in jobs}
+        for u in bucket:
+            if u not in seen_urls:
+                seen_urls.add(u)
+                jobs.append(("m3u8" if u.lower().endswith(".m3u8") else "direct",
+                             u, site.url))
         site.log("watch 取到流%d, 并行下载…" % len(jobs))
         lw = LockedWriter(site)
         with ThreadPoolExecutor(max_workers=max(1, min(8, dl_jobs))) as ex:
@@ -352,7 +364,8 @@ def main(argv=None) -> int:
                     const=True, default=None)
     ap.add_argument("--no-video-first", dest="video_first", action="store_const",
                     const=False)
-    ap.add_argument("--dl-jobs", type=int, default=3)
+    ap.add_argument("--dl-jobs", type=int, default=3,
+                    help="下载并发1-8, 0=按CPU自动")
     a = ap.parse_args(argv)
     if not a.url:
         ap.error("需要目标URL")
@@ -365,7 +378,7 @@ def main(argv=None) -> int:
     except ValueError as e:
         print("非法目标主机: %s" % e)
         return 2
-    return cmd_watch(site, a.batch, max(1, min(8, int(a.dl_jobs or 3))))
+    return cmd_watch(site, a.batch, C._auto_jobs(a.dl_jobs))
 
 
 if __name__ == "__main__":

@@ -136,9 +136,11 @@ s7 = C.Site("https://example.invalid/", a7)
 p7, o7 = C.eff_proxy(s7)
 atk("eff-manual-first", p7 == "http://127.0.0.1:18080" and o7 == "manual")
 s7.cfg["proxies"] = ["http://127.0.0.1:18081", "http://127.0.0.1:18082"]
-seq = [C.eff_proxy(s7)[0] for _ in range(4)]
-atk("proxy-rotate-order",
-    seq == ["http://127.0.0.1:18081", "http://127.0.0.1:18082"] * 2)
+seq = [C.eff_proxy(s7)[0] for _ in range(6)]
+atk("proxy-rotate-norepeat",
+    len(seq) == 6 and all(a != b for a, b in zip(seq, seq[1:]))
+    and set(seq) == {"http://127.0.0.1:18081", "http://127.0.0.1:18082"})
+atk("proxy-rotate-origin", C.eff_proxy(s7)[1] == "rotated")
 s7b = C.Site("https://example.invalid/", NS())
 s7b.cfg["proxies"] = ["http://127.0.0.1:18081"]
 p7b, o7b = C.eff_proxy(s7b)
@@ -172,7 +174,10 @@ atk("port-keep", C.norm_url("https://h:8443/a") == "https://h:8443/a")
 atk("safehost-dotdot", C._safe_host("..") == "")
 atk("safehost-doubledot", C._safe_host("a..b") == "")
 atk("safehost-dash", C._safe_host("-a.com") == "")
-atk("safehost-under", C._safe_host("a_b.com") == "")
+atk("safehost-under", C._safe_host("a_b.corp") == "a_b.corp")
+atk("safehost-lead-under", C._safe_host("_a.com") == "")
+atk("safehost-trail-under", C._safe_host("a_.com") == "")
+atk("safehost-colon", C._safe_host("a:b") == "")
 atk("safehost-ok", C._safe_host("OK-site123.com") == "ok-site123.com")
 try:
     C.Site("https://../", NS())
@@ -308,8 +313,133 @@ _r8, _fu8, _st8 = C._fetch_with_retry(_sg, _fs8, "https://8.8.8.8/x",
 atk("retry-429-then-ok", _r8 is not None and _st8 == 200 and
     _sg.counters.get("retry_429", 0) == 1)
 
+print("[I] round3: 匿名/适配/守卫")
+atk("csv-pipe-fw", C._csv_safe("｜calc") == "'｜calc")
+atk("csv-slash-fw", C._csv_safe("／x") == "'／x")
+sA = C.Site("https://example.invalid/", NS())
+sA.cfg["proxies"] = ["http://127.0.0.1:18081", "http://127.0.0.1:18082"]
+sA.report_proxy("http://127.0.0.1:18081", False)
+sA.report_proxy("http://127.0.0.1:18081", False)
+atk("cool-two-ok", sA._cooling("http://127.0.0.1:18081") is False)
+sA.report_proxy("http://127.0.0.1:18081", False)
+atk("cool-three-hit", sA._cooling("http://127.0.0.1:18081") is True)
+picks = [sA.rotate_proxy() for _ in range(6)]
+atk("cool-avoid", all(p == "http://127.0.0.1:18082" for p in picks))
+sA.report_proxy("http://127.0.0.1:18082", True)
+atk("cool-stat", sA.proxy_stat["http://127.0.0.1:18082"] == [1, 0])
+
+
+class _FakeSess2:
+    def __init__(self, proxy=""):
+        self.proxies = {"http": proxy, "https": proxy} if proxy else {}
+
+
+_fs9 = _FakeSess2("http://127.0.0.1:18081")
+atk("failover-switch", sA.failover(_fs9) is True
+    and _fs9.proxies["https"] == "http://127.0.0.1:18082"
+    and sA.last_proxy == "http://127.0.0.1:18082")
+sB = C.Site("https://example.invalid/", NS())
+sB.cfg["proxies"] = ["http://127.0.0.1:18081"]
+_fs10 = _FakeSess2("http://127.0.0.1:18081")
+atk("failover-single-no", sB.failover(_fs10) is False)
+atk("sess-proxy", C._sess_proxy(_fs9) == "http://127.0.0.1:18082")
+atk("sess-proxy-empty", C._sess_proxy(_FakeSess2()) == "")
+atk("proxied-yes", C._proxied(_fs9) is True)
+atk("proxied-no", C._proxied(_FakeSess2()) is False)
+sC = C.Site("https://example.invalid/", NS())
+sC.note_congestion()
+atk("congest-up", abs(sC.delay_mult - 1.5) < 1e-9)
+sC.note_congestion()
+atk("congest-up2", abs(sC.delay_mult - 2.25) < 1e-9)
+sC.delay_mult = 4.0
+sC.note_congestion()
+atk("congest-cap", abs(sC.delay_mult - 5.0) < 1e-9)
+atk("anon-noproxy", C.anon_level(C.Site("https://example.invalid/", NS())) in (0, 1))
+atk("anon-pool", C.anon_level(sA) == 2)
+atk("dns-hint-socks5", C._proxy_dns_hint("socks5://127.0.0.1:1080") != "")
+atk("dns-hint-socks5h", C._proxy_dns_hint("socks5h://127.0.0.1:1080") == "")
+atk("dns-hint-http", C._proxy_dns_hint("http://127.0.0.1:8080") == "")
+atk("jobs-auto", 2 <= C._auto_jobs(0) <= 8)
+atk("jobs-clamp", C._auto_jobs(99) == 8)
+atk("jobs-bad", C._auto_jobs("x") == 3)
+atk("disk-ok", C._disk_ok(tempfile.gettempdir(), 1) is True)
+atk("disk-huge", C._disk_ok(tempfile.gettempdir(), 10 ** 12) is False)
+atk("locale-default", C._locale_of(sC) == ("zh-CN", "Asia/Shanghai"))
+sC.cfg["locale"] = "en-US"
+sC.cfg["timezone_id"] = "Europe/Berlin"
+atk("locale-cfg", C._locale_of(sC) == ("en-US", "Europe/Berlin"))
+atk("ipv6-bool", isinstance(C._ipv6_available(), bool))
+sD = C.Site("https://example.invalid/", NS())
+atk("guard-public", C._browser_guard(sD, "https://8.8.8.8/x") is True)
+atk("guard-private", C._browser_guard(sD, "http://127.0.0.1/x") is False)
+atk("guard-bump", sD.counters.get("skip_browser_ssrf", 0) == 1)
+
+
+class _FakePage:
+    def __init__(self):
+        self.gotos = []
+        self.handlers = {}
+
+    def goto(self, url, **kw):
+        self.gotos.append(url)
+
+    def on(self, ev, fn):
+        self.handlers[ev] = fn
+
+
+_fp = _FakePage()
+atk("goto-guard-block", C._goto(_fp, sD, "http://127.0.0.1/x") != ""
+    and _fp.gotos == [])
+
+
+class _FakeEvResp:
+    def __init__(self, url):
+        self.url = url
+
+
+_fp2 = _FakePage()
+_bk = []
+C._attach_capture(_fp2, sD, _bk)
+_fp2.handlers["response"](_FakeEvResp("https://cdn.evil.invalid/v/seg.m3u8"))
+_fp2.handlers["response"](_FakeEvResp("https://cdn.evil.invalid/v/a.mp4"))
+_fp2.handlers["response"](_FakeEvResp("https://cdn.evil.invalid/v/a.html"))
+sD2 = C.Site("https://example.invalid/", NS(allow_cdn=True))
+_bk2 = []
+C._attach_capture(_fp2, sD2, _bk2)
+_fp2.handlers["response"](_FakeEvResp("https://cdn.evil.invalid/v/seg.m3u8"))
+atk("capture-cdn-off", _bk == [])
+atk("capture-cdn-on", _bk2 == ["https://cdn.evil.invalid/v/seg.m3u8"])
+
+_tmp_tools = tempfile.mkdtemp(prefix="tools_")
+_old_tools = os.environ.get("AUTO_SITE_DL_TOOLS")
+_old_pin = dict(C.ENGINE_SHA256)
+try:
+    os.environ["AUTO_SITE_DL_TOOLS"] = _tmp_tools
+    import importlib as _il
+    _il.reload(C)
+    _fake_exe = os.path.join(_tmp_tools, "probe-engine-xyz.exe")
+    with open(_fake_exe, "wb") as _f:
+        _f.write(b"fake-binary")
+    atk("exe-nopin", C.find_exe(["probe-engine-xyz.exe"]) == _fake_exe)
+    import hashlib as _hl
+    _good = _hl.sha256(b"fake-binary").hexdigest()
+    C.ENGINE_SHA256["probe-engine-xyz.exe"] = "0" * 64
+    atk("exe-pin-mismatch", C.find_exe(["probe-engine-xyz.exe"]) == "")
+    C.ENGINE_SHA256["probe-engine-xyz.exe"] = _good
+    atk("exe-pin-match", C.find_exe(["probe-engine-xyz.exe"]) == _fake_exe)
+finally:
+    C.ENGINE_SHA256.clear()
+    C.ENGINE_SHA256.update(_old_pin)
+    if _old_tools is None:
+        os.environ.pop("AUTO_SITE_DL_TOOLS", None)
+    else:
+        os.environ["AUTO_SITE_DL_TOOLS"] = _old_tools
+    _il.reload(C)
+    shutil.rmtree(_tmp_tools, ignore_errors=True)
+
 print("\nREDTEAM: %d 项全部守住" % N)
-for x in (s, s2, s2h, s2v, s2i, s6, s7, s7b, s8, s_col, s_ns, s9, _sg):
+for x in (s, s2, s2h, s2v, s2i, s6, s7, s7b, s8, s_col, s_ns, s9, _sg,
+          sA, sB, sC, sD, sD2):
     try:
         shutil.rmtree(x.root, ignore_errors=True)
     except Exception:

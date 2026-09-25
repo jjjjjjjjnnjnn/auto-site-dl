@@ -148,7 +148,17 @@ python -u -X utf8 site_crawler.py dl https://example.com/ 60 --allow-cdn --no-vi
 }
 ```
 
-`proxies` ≥ 2 条时 `dl/check` 自动轮换（日志标 `rotated`）。
+`proxies` ≥ 2 条时自动进入轮换池：每次出口随机且不与上次重复，单代理连败 3 次熔断 10 分钟并自动故障转移，浏览器上下文粘滞、下载逐次轮换。开工打匿名简报：L0直连（暴露）/L1单代理/L2轮换池；每次运行身份束（UA+视口+指纹+出口）全换。`socks5://` 会提示 DNS 泄漏风险，请用 `socks5h://`。
+
+```json
+{
+  "proxies": ["http://127.0.0.1:8081", "http://127.0.0.1:8082"],
+  "locale": "zh-CN",
+  "timezone_id": "Asia/Shanghai"
+}
+```
+
+`--dl-jobs 0` 按 CPU 自动（2–8）。拥塞（429/5xx）自动抬升限速、空闲衰减；Crawl-delay 自动遵守。外部引擎可用 `ENGINE_SHA256` pin 表防 `tools/` 投毒（见代码注释），依赖锁定见 `requirements.lock`。
 
 ---
 

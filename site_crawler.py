@@ -194,16 +194,22 @@ def norm_url(url: str) -> str:
 
 
 def _safe_host(host: str) -> str:
-    """主机名文件系统安全: 只允许 alnum/点/连字符/冒号(IPv6), 拒绝..穿越与畸形."""
+    """主机名文件系统安全: 允许中段 _/- (内网常见), 仍拒 ..穿越/首尾特殊/空标签.
+
+    注: IPv6 字面量(含 :) 一律拒绝 —— Windows 目录名不允许冒号, 此类目标请走域名.
+    """
     h = (host or "").strip().lower()
     if not h or h in (".", ".."):
         return ""
-    if re.search(r"[^a-z0-9.\-:]", h):
+    if re.search(r"[^a-z0-9.\-_]", h):
         return ""
-    if h.startswith((".", "-", ":")) or h.endswith((".", "-", ":")):
+    if h[0] in (".", "-", "_") or h[-1] in (".", "-", "_"):
         return ""
-    if any(seg in ("", ".", "..") for seg in h.split(".")):
-        return ""
+    for seg in h.split("."):
+        if seg in ("", ".", ".."):
+            return ""
+        if seg[0] in ("-", "_") or seg[-1] in ("-", "_"):
+            return ""
     return h
 
 
@@ -322,12 +328,17 @@ def mask_proxy(p: str) -> str:
 
 
 def polite_sleep(site, base=None) -> None:
-    """限速 + 随机抖动."""
+    """限速 + 随机抖动, 叠加自适应乘子(拥塞时自动变慢, 空闲渐回)."""
     try:
         t = float(base if base is not None else site.cfg.get("delay", 1.2))
     except Exception:
         t = 1.2
-    time.sleep(max(0.2, t) + random.random() * 0.8)
+    try:
+        mult = max(1.0, float(getattr(site, "delay_mult", 1.0) or 1.0))
+        site.delay_mult = max(1.0, mult * 0.99)
+    except Exception:
+        mult = 1.0
+    time.sleep(max(0.2, t) * mult + random.random() * 0.8)
 
 
 def think(page, ms: int = 600) -> None:
@@ -392,6 +403,114 @@ def detect_system_proxy() -> str:
     return sp
 
 
+def _proxy_dns_hint(proxy: str) -> str:
+    """DNS 泄漏提示: socks5(非 h)远端解析走本地, 建议 socks5h."""
+    try:
+        scheme = urlsplit(proxy or "").scheme.lower()
+    except Exception:
+        return ""
+    if scheme == "socks5":
+        return "DNS可能本地解析, 建议换 socks5h://"
+    return ""
+
+
+def anon_level(site) -> int:
+    """匿名等级: 0直连(暴露) / 1单代理 / 2轮换池. 每次运行身份束(run_id)恒更换."""
+    if len(site._proxy_list()) >= 2:
+        return 2
+    p, _ = eff_proxy(site)
+    return 1 if p else 0
+
+
+def anon_report(site) -> int:
+    """开工匿名简报: 等级 + 出口数 + DNS 提示 + 通道. 无代理即明示暴露风险."""
+    try:
+        lv = anon_level(site)
+    except Exception:
+        lv = 0
+    names = {0: "L0直连(真实IP暴露)", 1: "L1单代理", 2: "L2轮换池(每次出口随机不同)"}
+    try:
+        ch = (_cfg_str(getattr(site.args, "browser", ""))
+              or _cfg_str(site.cfg.get("browser", "")) or "chromium").lower()
+    except Exception:
+        ch = "chromium"
+    site.log("匿名: %s 身份束#%s 通道=%s"
+             % (names.get(lv, "L?"), getattr(site, "run_id", "?"), ch or "chromium"))
+    if lv == 0:
+        site.log("WARNING 无代理: 服务端可见你的真实出口 IP, 隐匿要求高请配代理池")
+    else:
+        try:
+            p, _ = eff_proxy(site)
+            hint = _proxy_dns_hint(p)
+            if hint:
+                site.log("WARNING " + hint)
+        except Exception:
+            pass
+    return lv
+
+
+def _ipv6_available() -> bool:
+    """本机 IPv6 栈+非回环地址探测(纯本地, 失败即 False)."""
+    try:
+        if not getattr(socket, "has_ipv6", False):
+            return False
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET6):
+            ip = info[4][0]
+            if ip != "::1" and not ip.startswith("fe80"):
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def _disk_ok(path: str, need_mb: int = 500) -> bool:
+    try:
+        return shutil.disk_usage(path).free >= need_mb * 1048576
+    except Exception:
+        return True
+
+
+def _auto_jobs(n) -> int:
+    """下载并发: >0 直接用(钳1-8); 0/非法 = 按 CPU 自动(min8,至少2)."""
+    try:
+        n = int(n)
+    except Exception:
+        return 3
+    if n <= 0:
+        try:
+            c = os.cpu_count() or 4
+        except Exception:
+            c = 4
+        return max(2, min(8, c // 2))
+    return max(1, min(8, n))
+
+
+def _locale_of(site):
+    """语言/时区: 配置优先, 默认中文上海; camoufox geoip 开时代理出口自动覆盖."""
+    loc = _cfg_str(site.cfg.get("locale")) or "zh-CN"
+    tz = _cfg_str(site.cfg.get("timezone_id")) or "Asia/Shanghai"
+    return loc, tz
+
+
+def _browser_guard(site, url: str) -> bool:
+    """浏览器导航守卫: 目标主机必须公网可解析, 拦元数据/内网直连.
+
+    浏览器由站点自己解析, TOCTOU 只能拦静态私网(动态重绑定见下载层对端复检).
+    """
+    try:
+        host = urlsplit(url).hostname or ""
+    except Exception:
+        return False
+    if not host or not is_public_host(host):
+        try:
+            site.bump("skip_browser_ssrf")
+            site.log("BROWSER-SSRF 拦截内网导航: %s" % url_for_log(url))
+        except Exception:
+            pass
+        return False
+    return True
+
+
 def preflight(site) -> int:
     """开工预检: 代理已死直接拦下(返回2), 不带病空跑."""
     p, origin = eff_proxy(site)
@@ -401,6 +520,10 @@ def preflight(site) -> int:
         return 2
     if p:
         site.log("代理: %s(%s)" % (origin, mask_proxy(p)))
+    try:
+        anon_report(site)
+    except Exception:
+        pass
     return 0
 
 
@@ -437,6 +560,12 @@ class Site:
         self.fails = []
         self._proxy_idx = 0
         self._cloned_done = False
+        self.run_id = "%08x" % random.getrandbits(32)  # 本次运行身份束编号
+        self.delay_mult = 1.0  # 自适应限速乘子(拥塞抬升, 空闲衰减)
+        self.last_proxy = ""  # 上次出口(轮换避重)
+        self.proxy_cool = {}  # 代理 -> 冷却截止(unix 时间)
+        self.proxy_stat = {}  # 代理 -> [成功, 失败]
+        self._alive_cache = {}  # 代理存活缓存 {proxy: (ts, bool)}
         self._camoufox_cm = None
         self._robots = None
         self.pick_identity()
@@ -454,16 +583,82 @@ class Site:
     # -- 代理 --
     def _proxy_list(self):
         raw = _cfg_list(self.cfg.get("proxies"))
-        return [c for c in (check_proxy(x) for x in raw) if c]
+        out = [c for c in (check_proxy(x) for x in raw) if c]
+        return list(dict.fromkeys(out))  # 保序去重
+
+    def _cooling(self, proxy: str) -> bool:
+        try:
+            return time.time() < float(self.proxy_cool.get(proxy, 0))
+        except Exception:
+            return False
+
+    def report_proxy(self, proxy: str, ok: bool) -> None:
+        """代理健康记账: 连败3次进冷却10分钟; 成功清零. 支撑持续更换与故障转移."""
+        if not proxy:
+            return
+        st = self.proxy_stat.get(proxy, [0, 0])
+        if ok:
+            st[0] += 1
+            st[1] = 0
+            self.proxy_cool.pop(proxy, None)
+        else:
+            st[1] += 1
+            if st[1] >= 3 and proxy not in self.proxy_cool:
+                self.proxy_cool[proxy] = time.time() + 600
+                self.log("代理熔断10分钟: %s" % mask_proxy(proxy))
+        self.proxy_stat[proxy] = st
+
+    def alive_ok(self, proxy: str, ttl: int = 60) -> bool:
+        """存活检查带缓存(TTL 60s), 防每文件一次 TCP 探测拖慢."""
+        now = time.time()
+        try:
+            ts, ok = self._alive_cache.get(proxy, (0, False))
+            if now - ts < ttl:
+                return ok
+        except Exception:
+            pass
+        ok = proxy_alive(proxy)
+        self._alive_cache[proxy] = (now, ok)
+        return ok
 
     def rotate_proxy(self) -> str:
-        """代理轮换: proxies>=2 条时按序取用完回卷; 否则返回''."""
-        lst = self._proxy_list()
-        if len(lst) < 2:
+        """代理轮换: 随机取、避开上次与冷却中, 每次出口不同. 总池<2条回 ''."""
+        total = self._proxy_list()
+        if len(total) < 2:
             return ""
-        p = lst[self._proxy_idx % len(lst)]
-        self._proxy_idx += 1
+        avail = [p for p in total if not self._cooling(p)] or total
+        cands = [p for p in avail if p != self.last_proxy] or avail
+        p = random.choice(cands)
+        self.last_proxy = p
         return p
+
+    def failover(self, sess) -> bool:
+        """出口故障转移: 当前出口连败即换一个非冷却代理写入会话并重试."""
+        try:
+            cur = (getattr(sess, "proxies", {}) or {}).get("https", "")
+        except Exception:
+            cur = ""
+        if cur:
+            self.report_proxy(cur, False)
+        pool = [p for p in self._proxy_list()
+                if p != cur and not self._cooling(p)]
+        if not pool:
+            return False
+        nxt = random.choice(pool)
+        try:
+            sess.proxies.update({"http": nxt, "https": nxt})
+        except Exception:
+            return False
+        self.last_proxy = nxt
+        self.log("代理故障转移 -> %s" % mask_proxy(nxt))
+        return True
+
+    def note_congestion(self) -> None:
+        """拥塞反馈: 429/5xx 即抬升限速乘子(上限5x), 空闲时 polite_sleep 衰减."""
+        try:
+            self.delay_mult = min(5.0, float(self.delay_mult or 1.0) * 1.5)
+        except Exception:
+            self.delay_mult = 1.0
 
     def want_clone(self) -> bool:
         """是否启用真实浏览器 profile 克隆: 有 --clone-profile 路径即开."""
@@ -559,7 +754,8 @@ class Site:
 
 
 def eff_proxy(site):
-    """代理生效顺序: 站点proxies轮换(>=2条) > 站点单条 > 命令行手动 > 站点proxy > 系统代理."""
+    """代理生效顺序: 站点proxies随机轮换(>=2条, 避重避冷却) > 站点单条 >
+    命令行手动 > 站点proxy > 系统代理."""
     lst = site._proxy_list()
     if len(lst) >= 2:
         return site.rotate_proxy(), "rotated"
@@ -634,12 +830,21 @@ def make_session(site):
         s = requests.Session()
     try:
         s.headers.update(headers)
-    except Exception:
-        pass
+    except Exception as e:
+        site.log("WARNING 会话头设置失败: %s" % str(e)[:80])
     try:
         s.proxies.update(proxies)
+    except Exception as e:
+        site.log("WARNING 代理注入会话失败: %s" % str(e)[:80])
+    try:
         s.verify = site.tls_verify()
+    except Exception as e:
+        site.log("WARNING TLS校验设置失败: %s" % str(e)[:80])
+    try:
         s.trust_env = False
+    except Exception as e:
+        site.log("WARNING trust_env 设置失败(环境变量可能旁路代理): %s" % str(e)[:80])
+    try:
         s.timeout = 30
     except Exception:
         pass
@@ -684,8 +889,9 @@ def _open_ctx_camoufox(site, headless: bool, proxy: str):
     """Camoufox后端: C++层指纹 + WebRTC硬关 + 拟人 + 地理对齐."""
     from camoufox.sync_api import Camoufox
     prof = clone_profile_dir(site) if site.want_clone() else site.prof
+    loc, _tz = _locale_of(site)
     kw = dict(persistent_context=True, user_data_dir=prof, headless=headless,
-              os="windows", locale="zh-CN", block_webrtc=True, humanize=True,
+              os="windows", locale=loc, block_webrtc=True, humanize=True,
               geoip=bool(proxy))
     if proxy:
         kw["proxy"] = {"server": proxy}
@@ -697,34 +903,68 @@ def _open_ctx_camoufox(site, headless: bool, proxy: str):
 
 
 def open_ctx(site, headless: bool = True, proxy: str = ""):
-    """打开浏览器上下文. 返回 (pw, browser, ctx, page); camoufox 通道 pw/browser 为 None."""
+    """打开浏览器上下文. 返回 (pw, browser, ctx, page); camoufox 通道 pw/browser 为 None.
+
+    环境自适应: 指定通道缺失/启动失败自动回退 bundled chromium, 不直接崩.
+    有代理时追加 WebRTC 内网 IP 封堵 flag.
+    """
     from playwright.sync_api import sync_playwright
     pw = sync_playwright().start()
-    ch = (getattr(site.args, "browser", "") or site.cfg.get("browser", "") or "").lower()
+    loc, tz = _locale_of(site)
+    ch = (_cfg_str(getattr(site.args, "browser", ""))
+          or _cfg_str(site.cfg.get("browser", "")) or "").lower()
     if ch == "camoufox":
-        return _open_ctx_camoufox(site, headless, proxy)
-    launch_kw = {"headless": headless,
-                 "args": ["--disable-blink-features=AutomationControlled"]}
+        try:
+            return _open_ctx_camoufox(site, headless, proxy)
+        except Exception as e:
+            site.log("WARNING camoufox 启动失败, 回退 chromium: %s" % str(e)[:100])
+            ch = ""
+    args = ["--disable-blink-features=AutomationControlled"]
+    if proxy:
+        args.append("--force-webrtc-ip-handling-policy=disable_non_proxied_udp")
+    launch_kw = {"headless": headless, "args": args}
     if proxy:
         launch_kw["proxy"] = {"server": proxy}
     if ch in ("chrome", "edge"):
         launch_kw["channel"] = ch
     insecure = not site.tls_verify()
-    if site.want_clone():
-        prof = clone_profile_dir(site)
-        ctx = pw.chromium.launch_persistent_context(
-            prof, headless=headless, channel=launch_kw.get("channel"),
-            user_agent=site.UA, viewport=site.viewport, locale="zh-CN",
-            timezone_id="Asia/Shanghai", ignore_https_errors=insecure,
-            proxy=launch_kw.get("proxy"))
+
+    def _boot_plain():
+        browser = pw.chromium.launch(headless=headless, args=args,
+                                     proxy=launch_kw.get("proxy"))
+        ctx = browser.new_context(
+            user_agent=site.UA, viewport=site.viewport, locale=loc,
+            timezone_id=tz, ignore_https_errors=insecure)
         ctx.add_init_script(STEALTH_JS)
-        return pw, None, ctx, ctx.new_page()
-    browser = pw.chromium.launch(**launch_kw)
-    ctx = browser.new_context(
-        user_agent=site.UA, viewport=site.viewport, locale="zh-CN",
-        timezone_id="Asia/Shanghai", ignore_https_errors=insecure)
-    ctx.add_init_script(STEALTH_JS)
-    return pw, browser, ctx, ctx.new_page()
+        return pw, browser, ctx, ctx.new_page()
+
+    try:
+        if site.want_clone():
+            prof = clone_profile_dir(site)
+            ctx = pw.chromium.launch_persistent_context(
+                prof, headless=headless, channel=launch_kw.get("channel"),
+                user_agent=site.UA, viewport=site.viewport, locale=loc,
+                timezone_id=tz, ignore_https_errors=insecure,
+                proxy=launch_kw.get("proxy"))
+            ctx.add_init_script(STEALTH_JS)
+            return pw, None, ctx, ctx.new_page()
+        browser = pw.chromium.launch(**launch_kw)
+        ctx = browser.new_context(
+            user_agent=site.UA, viewport=site.viewport, locale=loc,
+            timezone_id=tz, ignore_https_errors=insecure)
+        ctx.add_init_script(STEALTH_JS)
+        return pw, browser, ctx, ctx.new_page()
+    except Exception as e:
+        if ch in ("chrome", "edge") or site.want_clone():
+            site.log("WARNING 指定浏览器通道失败, 回退 bundled chromium: %s"
+                     % str(e)[:100])
+            try:
+                return _boot_plain()
+            except Exception as e2:
+                close_ctx(pw, None, None)
+                raise e2
+        close_ctx(pw, None, None)
+        raise
 
 
 def close_ctx(pw, browser, ctx) -> None:
@@ -981,13 +1221,35 @@ def hash_file(path: str) -> str:
         return ""
 
 
+# 外部引擎 SHA256 pin 表(tools/ 劫持防御): 有条目即校验, 不符回 "".
+# 填入你信任的二进制哈希后, 同目录投毒即失效. 为空 = 不校验(默认, 保持开箱可用).
+# 生成: python -X utf8 -c "import hashlib;print(hashlib.sha256(open('tools/yt-dlp.exe','rb').read()).hexdigest())"
+ENGINE_SHA256 = {}
+
+TOOLS_DIR = os.environ.get("AUTO_SITE_DL_TOOLS", "tools")
+
+
+def _verify_exe(path: str, name: str) -> bool:
+    want = ENGINE_SHA256.get(name, "")
+    if not want:
+        return True
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest().lower() == want.lower()
+    except Exception:
+        return False
+
+
 def find_exe(names):
-    """外部引擎查找: tools/ -> PATH. 禁自动下载/更新."""
+    """外部引擎查找: tools/ -> PATH. 禁自动下载/更新. tools/ 命中须过 pin 表."""
     if isinstance(names, str):
         names = [names]
     for n in names:
-        p = os.path.join("tools", n)
-        if os.path.isfile(p):
+        p = os.path.join(TOOLS_DIR, n)
+        if os.path.isfile(p) and _verify_exe(p, n):
             return p
     for n in names:
         w = shutil.which(n)
@@ -1002,7 +1264,7 @@ def _csv_safe(v) -> str:
     t = s.lstrip(" \t\r\n\uFEFF\u200b\u200c\u200e\u200f")
     if t[:1] in ("=", "+", "-", "@", "|", "\t", "\r", "\n"):
         return "'" + s
-    if t[:1] in ("＝", "＋", "－", "＠"):
+    if t[:1] in ("＝", "＋", "－", "＠", "｜", "／"):
         return "'" + s
     return s
 
@@ -1062,6 +1324,13 @@ def _proxied(sess) -> bool:
         return bool(pr.get("https") or pr.get("http"))
     except Exception:
         return True
+
+
+def _sess_proxy(sess) -> str:
+    try:
+        return (getattr(sess, "proxies", {}) or {}).get("https", "") or ""
+    except Exception:
+        return ""
 
 
 def _fetch_guarded(sess, url: str, referer: str, accept: str, max_hops: int = 5):
@@ -1132,6 +1401,10 @@ def _fetch_with_retry(site, sess, url: str, referer: str, accept: str):
             return None, final, status
         if i >= 3:
             return None, final, status
+        try:
+            site.note_congestion()
+        except Exception:
+            pass
         wait = delays[i] + random.random()
         site.bump("retry_%d" % status)
         time.sleep(min(wait, 60.0))
@@ -1242,6 +1515,12 @@ def fetch_one(site, sess, url: str, idx: int, referer: str, source: str = "list"
         acc = ("video/*" if low.endswith(tuple(VID_SUFFIXES | STREAM_SUFFIXES))
                else "image/*,*/*;q=0.8")
         r, final, status = _fetch_with_retry(site, sess, url, referer, acc)
+        if r is None and status == -2:
+            try:  # 出口连败: 故障转移换代理重试一次
+                if site.failover(sess):
+                    r, final, status = _fetch_with_retry(site, sess, url, referer, acc)
+            except Exception:
+                pass
         if r is None:
             if status in (-1, -3):
                 site.bump("skip_ssrf")
@@ -1282,6 +1561,10 @@ def fetch_one(site, sess, url: str, idx: int, referer: str, source: str = "list"
             f.write(buf)
         os.replace(tmp, final)
         record(site, url, final, source)
+        try:
+            site.report_proxy(_sess_proxy(sess), True)
+        except Exception:
+            pass
         return final
     except Exception as e:
         site.note_fail(url, str(e)[:80])
@@ -1437,6 +1720,8 @@ def deep_dive(page, site, sess, anchors, idx: int, budget: int):
             continue
         budget[0] -= 1
         n += 1
+        if not _browser_guard(site, a):
+            continue
         try:
             page.goto(a, wait_until="domcontentloaded", timeout=30000)
             think(page, 800)
@@ -1478,6 +1763,8 @@ def deep_dive(page, site, sess, anchors, idx: int, budget: int):
 
 # ================================================================ 模式
 def _goto(page, site, url: str):
+    if not _browser_guard(site, url):
+        return "内网目标已拦截"
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=30000)
         return ""
@@ -1559,6 +1846,8 @@ def cmd_dl(site, batch: int = 60) -> int:
     site.log("TARGET=%s MODE=dl v%s" % (site.url, __version__))
     if preflight(site) == 2:
         return 2
+    if not _disk_ok(site.dl):
+        site.log("WARNING 磁盘剩余不足500MB, 仍继续(可能中途失败)")
     if os.path.isfile(site.ckf):
         try:
             if os.path.getsize(site.ckf) < 8:
@@ -1824,6 +2113,13 @@ def cmd_envcheck(site=None) -> int:
         rep("camoufox(C++指纹)", True, "可选后端 --browser camoufox")
     except Exception:
         rep("camoufox(C++指纹)", False, "pip install camoufox && python -m camoufox fetch")
+    try:
+        free_gb = shutil.disk_usage(os.getcwd()).free / (1 << 30)
+        disk_note = "剩余%.1fGB" % free_gb
+    except Exception:
+        disk_note = "未知"
+    rep("cpu/磁盘", True, "%s核/%s" % (os.cpu_count(), disk_note))
+    rep("ipv6", _ipv6_available(), "本机v6可用" if _ipv6_available() else "仅v4(正常)")
     if bad:
         print("envcheck: FAIL(缺核心项: %s)" % ",".join(bad))
         return 1
@@ -1855,7 +2151,8 @@ def build_parser():
                     const=True, default=None)
     ap.add_argument("--no-video-first", dest="video_first", action="store_const",
                     const=False)
-    ap.add_argument("--dl-jobs", type=int, default=3)
+    ap.add_argument("--dl-jobs", type=int, default=3,
+                    help="watch下载并发1-8, 0=按CPU自动")
     return ap
 
 
@@ -1890,8 +2187,7 @@ def main(argv=None) -> int:
         return cmd_purge(site)
     if a.mode == "watch":
         from watchflow import cmd_watch
-        jobs = max(1, min(8, int(a.dl_jobs or 3)))
-        return cmd_watch(site, a.batch, jobs)
+        return cmd_watch(site, a.batch, _auto_jobs(a.dl_jobs))
     return 2
 
 
